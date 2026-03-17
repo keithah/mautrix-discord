@@ -55,7 +55,7 @@ func parseAllowedLinkPreviews(raw map[string]any) []string {
 	return allowedLinkPreviews
 }
 
-func uploadDiscordAttachment(cli *http.Client, url string, data []byte) error {
+func uploadDiscordAttachment(cli *http.Client, url string, data []byte, contentType string) error {
 	req, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(data))
 	if err != nil {
 		return err
@@ -64,7 +64,10 @@ func uploadDiscordAttachment(cli *http.Client, url string, data []byte) error {
 	for key, value := range discordgo.DroidBaseHeaders {
 		req.Header.Set(key, value)
 	}
-	req.Header.Set("Content-Type", "application/octet-stream")
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Referer", "https://discord.com/")
 	req.Header.Set("Sec-Fetch-Dest", "empty")
 	req.Header.Set("Sec-Fetch-Mode", "cors")
@@ -135,11 +138,21 @@ func (mc *MessageConverter) ToDiscord(
 		}
 
 		filename := content.Body
-		if content.FileName != "" && content.FileName != content.Body {
+		hasCaption := content.FileName != "" && content.FileName != content.Body
+		if content.FileName != "" {
 			filename = content.FileName
+		}
+		isSpoiler := msg.Event.Content.Raw["page.codeberg.everypizza.msc4193.spoiler"] == true
+
+		var voiceMeta *discordVoiceMetadata
+		if content.MsgType == event.MsgAudio && !hasCaption && !isSpoiler {
+			voiceMeta = getDiscordVoiceMetadata(content)
+		}
+
+		if hasCaption {
 			convertMatrix()
 		}
-		if msg.Event.Content.Raw["page.codeberg.everypizza.msc4193.spoiler"] == true {
+		if isSpoiler {
 			filename = "SPOILER_" + filename
 		}
 
@@ -148,15 +161,23 @@ func (mc *MessageConverter) ToDiscord(
 			ID:       "0",
 			Filename: filename,
 		}
+		if voiceMeta != nil {
+			flags := int(discordgo.MessageFlagsIsVoiceMessage)
+			req.Flags = &flags
+			att.ContentType = voiceMeta.ContentType
+			att.DurationSeconds = voiceMeta.DurationSeconds
+			att.Waveform = voiceMeta.Waveform
+		}
 
-		upload_id := mc.NextDiscordUploadID()
-		log.Debug().Str("upload_id", upload_id).Msg("Preparing attachment")
+		uploadID := mc.NextDiscordUploadID()
+		log.Debug().Str("upload_id", uploadID).Msg("Preparing attachment")
+		filePrep := &discordgo.FilePrepare{
+			Size: len(mediaData),
+			Name: att.Filename,
+			ID:   uploadID,
+		}
 		prep, err := session.ChannelAttachmentCreate(channelID, &discordgo.ReqPrepareAttachments{
-			Files: []*discordgo.FilePrepare{{
-				Size: len(mediaData),
-				Name: att.Filename,
-				ID:   mc.NextDiscordUploadID(),
-			}},
+			Files: []*discordgo.FilePrepare{filePrep},
 		}, refererOpt)
 
 		if err != nil {
@@ -167,7 +188,7 @@ func (mc *MessageConverter) ToDiscord(
 		prepared := prep.Attachments[0]
 		att.UploadedFilename = prepared.UploadFilename
 
-		err = uploadDiscordAttachment(session.Client, prepared.UploadURL, mediaData)
+		err = uploadDiscordAttachment(session.Client, prepared.UploadURL, mediaData, att.OriginalContentType)
 		if err != nil {
 			log.Err(err).Msg("Failed to reupload Discord attachment after preparing")
 			return nil, bridgev2.ErrMediaReuploadFailed
