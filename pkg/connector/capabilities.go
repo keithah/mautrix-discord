@@ -38,7 +38,7 @@ func (dc *DiscordConnector) GetCapabilities() *bridgev2.NetworkGeneralCapabiliti
 }
 
 func (wa *DiscordConnector) GetBridgeInfoVersion() (info, caps int) {
-	return 1, 3
+	return 1, 4
 }
 
 /*func supportedIfFFmpeg() event.CapabilitySupportLevel {
@@ -49,7 +49,7 @@ func (wa *DiscordConnector) GetBridgeInfoVersion() (info, caps int) {
 }*/
 
 func capID() string {
-	base := "fi.mau.discord.capabilities.2026_02_17"
+	base := "fi.mau.discord.capabilities.2026_03_18"
 	if ffmpeg.Supported() {
 		return base + "+ffmpeg"
 	}
@@ -95,6 +95,7 @@ var discordCaps = &event.RoomFeatures{
 				"image/png":  event.CapLevelFullySupported,
 				"image/gif":  event.CapLevelFullySupported,
 				"image/webp": event.CapLevelFullySupported,
+				"image/*":    event.CapLevelPartialSupport,
 			},
 			Caption:          event.CapLevelFullySupported,
 			MaxCaptionLength: MaxTextLength,
@@ -104,6 +105,7 @@ var discordCaps = &event.RoomFeatures{
 			MimeTypes: map[string]event.CapabilitySupportLevel{
 				"video/mp4":  event.CapLevelFullySupported,
 				"video/webm": event.CapLevelFullySupported,
+				"video/*":    event.CapLevelPartialSupport,
 			},
 			Caption:          event.CapLevelFullySupported,
 			MaxCaptionLength: MaxTextLength,
@@ -114,6 +116,7 @@ var discordCaps = &event.RoomFeatures{
 				"audio/mpeg": event.CapLevelFullySupported,
 				"audio/webm": event.CapLevelFullySupported,
 				"audio/wav":  event.CapLevelFullySupported,
+				"audio/*":    event.CapLevelPartialSupport,
 			},
 			Caption:          event.CapLevelFullySupported,
 			MaxCaptionLength: MaxTextLength,
@@ -125,6 +128,7 @@ var discordCaps = &event.RoomFeatures{
 				"audio/ogg":               event.CapLevelFullySupported,
 				"audio/webm; codecs=opus": event.CapLevelFullySupported,
 				"audio/webm":              event.CapLevelFullySupported,
+				"audio/*":                 event.CapLevelPartialSupport,
 			},
 			Caption:          event.CapLevelFullySupported,
 			MaxCaptionLength: MaxTextLength,
