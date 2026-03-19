@@ -450,9 +450,14 @@ func (d *DiscordClient) handleThreadDelete(ctx context.Context, thread *discordg
 	return d.connector.DB.Thread.DeleteByThreadChannelID(ctx, string(d.UserLogin.ID), thread.ID)
 }
 
-func (d *DiscordClient) queueIndividualMembershipChange(ctx context.Context, portalKey networkid.PortalKey, user *discordgo.User, membership event.Membership) {
+func (d *DiscordClient) queueIndividualMembershipChange(
+	ctx context.Context,
+	portalKey networkid.PortalKey,
+	user *discordgo.User,
+	membership event.Membership,
+	ts time.Time,
+) {
 	log := zerolog.Ctx(ctx)
-	ts := time.Now()
 
 	userID := discordid.MakeUserID(user.ID)
 	info := d.getUserInfo(ctx, user)
@@ -461,7 +466,7 @@ func (d *DiscordClient) queueIndividualMembershipChange(ctx context.Context, por
 		Stringer("portal_key", portalKey).
 		Str("moving_user_id", user.ID).
 		Str("membership", string(membership)).
-		Msg("Queueing chat info change in response to group DM membership change")
+		Msg("Queueing chat info change in response to membership change")
 
 	d.UserLogin.QueueRemoteEvent(&simplevent.ChatInfoChange{
 		EventMeta: simplevent.EventMeta{
@@ -489,13 +494,21 @@ func (d *DiscordClient) queueIndividualMembershipChange(ctx context.Context, por
 }
 
 func (d *DiscordClient) handleRecipientAdd(ctx context.Context, evt *discordgo.ChannelRecipientAdd, route *router.Route) error {
-	d.queueIndividualMembershipChange(ctx, route.PortalKey, evt.User, event.MembershipJoin)
+	d.queueIndividualMembershipChange(ctx, route.PortalKey, evt.User, event.MembershipJoin, time.Now())
 	return nil
 }
 
 func (d *DiscordClient) handleRecipientRemove(ctx context.Context, evt *discordgo.ChannelRecipientRemove, route *router.Route) error {
-	d.queueIndividualMembershipChange(ctx, route.PortalKey, evt.User, event.MembershipLeave)
+	d.queueIndividualMembershipChange(ctx, route.PortalKey, evt.User, event.MembershipLeave, time.Now())
 	return nil
+}
+
+func (d *DiscordClient) handleGuildMemberJoinMessage(ctx context.Context, msg *discordgo.Message, route *router.Route) {
+	ts := msg.Timestamp
+	if ts.IsZero() {
+		ts = time.Now()
+	}
+	d.queueIndividualMembershipChange(ctx, route.PortalKey, msg.Author, event.MembershipJoin, ts)
 }
 
 func (d *DiscordClient) handleMessageAck(ctx context.Context, ack *discordgo.MessageAck) {
@@ -723,6 +736,12 @@ func (d *DiscordClient) handleDiscordEvent(rawEvt any) {
 		ctx, log := messageCtx(ctx, evt.Message)
 		bridged, route := d.channelIsBridged(ctx, evt.ChannelID)
 		if !bridged {
+			return
+		}
+
+		if evt.Message.Type == discordgo.MessageTypeGuildMemberJoin {
+			d.userCache.UpdateWithMessage(evt.Message)
+			d.handleGuildMemberJoinMessage(ctx, evt.Message, route)
 			return
 		}
 

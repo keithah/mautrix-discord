@@ -235,6 +235,9 @@ func (mc *MessageConverter) renderDiscordTextMessage(ctx context.Context, intent
 			Body: fmt.Sprintf("(%s started a call. Use the Discord app to answer.)", msg.Author.String()),
 		}}
 	case discordgo.MessageTypeGuildMemberJoin:
+		// This is only used for backfilled user join notices (e.g. "Good to
+		// see you, [username]."). Live user joins are handled as membership
+		// changes in the guild system channel and aren't even converted.
 		return &bridgev2.ConvertedMessagePart{Type: event.EventMessage, Content: &event.MessageEventContent{
 			MsgType: event.MsgEmote,
 			Body:    "joined the server",
