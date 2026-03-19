@@ -8,6 +8,22 @@ guilds:
     # Should guild channel portals take on the guild icon as their avatars?
     guild_avatars_in_rooms: false
 
+# Template for Matrix room names created for Discord channels, except for 1:1
+# DMs. 1:1 DMs intentionally do not use this template as their room metadata is
+# derived from the other user's ghost (when private_chat_portal_meta is enabled).
+#
+# Available variables:
+#   .Name - The Discord channel name.
+#   .ParentName - The parent channel/category name, if any.
+#   .GuildName - The guild name for guild channels.
+#   .Type - The raw Discord channel type.
+#   .NSFW - Whether the channel is marked NSFW.
+#   .IsDM - Whether the channel is a 1:1 DM.
+#   .IsGroupDM - Whether the channel is a group DM.
+#   .IsCategory - Whether the channel is a guild category.
+#   .IsGuildChannel - Whether the channel belongs to a guild.
+channel_name_template: "{{if and .IsGuildChannel (not .IsCategory)}}#{{end}}{{.Name}}"
+
 # Should incoming custom emoji reactions be bridged as mxc:// URIs?
 # If false, they are bridged as :shortcode: instead.
 custom_emoji_reactions: true

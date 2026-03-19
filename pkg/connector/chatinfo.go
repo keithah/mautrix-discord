@@ -107,6 +107,43 @@ func (d *DiscordClient) getPrivateChannelMemberList(ch *discordgo.Channel) bridg
 	return members
 }
 
+func (d *DiscordClient) getChannelNameParams(ch *discordgo.Channel) *ChannelNameParams {
+	params := &ChannelNameParams{
+		Name:           ch.Name,
+		Type:           ch.Type,
+		NSFW:           ch.NSFW,
+		IsDM:           ch.Type == discordgo.ChannelTypeDM,
+		IsGroupDM:      ch.Type == discordgo.ChannelTypeGroupDM,
+		IsCategory:     ch.Type == discordgo.ChannelTypeGuildCategory,
+		IsGuildChannel: ch.GuildID != "",
+	}
+
+	if ch.ParentID != "" {
+		parent, err := d.Session.State.Channel(ch.ParentID)
+		if err == nil && parent != nil {
+			params.ParentName = parent.Name
+		}
+	}
+
+	if ch.GuildID != "" {
+		guild, err := d.Session.State.Guild(ch.GuildID)
+		if err == nil && guild != nil {
+			params.GuildName = guild.Name
+		}
+	}
+
+	return params
+}
+
+func (d *DiscordClient) getChannelName(ch *discordgo.Channel) *string {
+	if ch.Type == discordgo.ChannelTypeDM {
+		return nil
+	}
+
+	name := d.connector.Config.FormatChannelName(d.getChannelNameParams(ch))
+	return &name
+}
+
 // getChannelChatInfo computes [bridgev2.ChatInfo] for a guild channel or private (DM or group DM) channel.
 func (d *DiscordClient) getChannelChatInfo(ctx context.Context, ch *discordgo.Channel) (*bridgev2.ChatInfo, error) {
 	var roomType database.RoomType
@@ -147,7 +184,7 @@ func (d *DiscordClient) getChannelChatInfo(ctx context.Context, ch *discordgo.Ch
 	}
 
 	return &bridgev2.ChatInfo{
-		Name:   &ch.Name,
+		Name:   d.getChannelName(ch),
 		Topic:  &ch.Topic,
 		Avatar: d.makeAvatarForChannel(ctx, ch),
 

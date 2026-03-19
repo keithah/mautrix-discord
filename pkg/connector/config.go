@@ -18,20 +18,77 @@ package connector
 
 import (
 	_ "embed"
+	"strings"
+	"text/template"
 
+	"github.com/bwmarrin/discordgo"
 	up "go.mau.fi/util/configupgrade"
+	"gopkg.in/yaml.v3"
 )
 
 //go:embed example-config.yaml
 var ExampleConfig string
+
+const defaultChannelNameTemplate = `{{if and .IsGuildChannel (not .IsCategory)}}#{{end}}{{.Name}}`
 
 type Config struct {
 	Guilds struct {
 		BridgingGuildIDs []string `yaml:"bridging_guild_ids"`
 	} `yaml:"guilds"`
 
-	CustomEmojiReactions *bool `yaml:"custom_emoji_reactions"`
-	GuildAvatarsInRooms  *bool `yaml:"guild_avatars_in_rooms"`
+	// ChannelNameTemplate formats Matrix room names for Discord channels other
+	// than 1:1 DMs, which intentionally use bridgev2's ghost-derived default.
+	ChannelNameTemplate  string `yaml:"channel_name_template"`
+	CustomEmojiReactions *bool  `yaml:"custom_emoji_reactions"`
+	GuildAvatarsInRooms  *bool  `yaml:"guild_avatars_in_rooms"`
+
+	channelNameTemplate *template.Template `yaml:"-"`
+}
+
+type umConfig Config
+
+func (c *Config) UnmarshalYAML(node *yaml.Node) error {
+	err := node.Decode((*umConfig)(c))
+	if err != nil {
+		return err
+	}
+
+	if c.ChannelNameTemplate == "" {
+		c.ChannelNameTemplate = defaultChannelNameTemplate
+	}
+
+	c.channelNameTemplate, err = template.New("channel_name").Parse(c.ChannelNameTemplate)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// ChannelNameParams describes the values available to [Config.FormatChannelName].
+//
+// It intentionally includes both the raw Discord channel type and convenience
+// booleans so templates can express v1-style naming rules without relying on
+// numeric channel type constants.
+type ChannelNameParams struct {
+	Name           string
+	ParentName     string
+	GuildName      string
+	Type           discordgo.ChannelType
+	NSFW           bool
+	IsDM           bool
+	IsGroupDM      bool
+	IsCategory     bool
+	IsGuildChannel bool
+}
+
+// FormatChannelName renders [Config.ChannelNameTemplate] for non-guild-space
+// channel portals. One-to-one DMs intentionally bypass this helper so bridgev2
+// can derive the room name from the other user's ghost.
+func (c *Config) FormatChannelName(params *ChannelNameParams) string {
+	var buffer strings.Builder
+	_ = c.channelNameTemplate.Execute(&buffer, params)
+	return buffer.String()
 }
 
 func (c Config) CustomEmojiReactionsEnabled() bool {
@@ -45,6 +102,7 @@ func (c Config) GuildAvatarsInRoomsEnabled() bool {
 func upgradeConfig(helper up.Helper) {
 	helper.Copy(up.List, "guilds", "bridging_guild_ids")
 	helper.Copy(up.Bool, "guilds", "guild_avatars_in_rooms")
+	helper.Copy(up.Str, "channel_name_template")
 	helper.Copy(up.Bool, "custom_emoji_reactions")
 }
 
