@@ -451,7 +451,7 @@ func (d *DiscordClient) canSeeGuildChannel(ctx context.Context, ch *discordgo.Ch
 	}
 
 	canView := perms&discordgo.PermissionViewChannel > 0
-	log.Debug().
+	log.Trace().
 		Int64("permissions", perms).
 		Bool("channel_visible", canView).
 		Msg("Computed visibility of guild channel")
