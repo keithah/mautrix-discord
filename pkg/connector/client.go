@@ -402,7 +402,7 @@ func (d *DiscordClient) syncPrivateChannels(ctx context.Context) {
 	maxDms := min(10, len(dms))
 	for _, dm := range dms[:maxDms] {
 		log.Debug().Str("channel_id", dm.ID).Msg("Syncing private channel with recent activity")
-		d.syncChannel(ctx, dm)
+		d.queueChannelResync(ctx, dm)
 	}
 }
 
@@ -469,14 +469,6 @@ func (d *DiscordClient) makeAvatarForGuild(guild *discordgo.Guild) *bridgev2.Ava
 	}
 }
 
-func (d *DiscordClient) syncGuildSpace(_ context.Context, guild *discordgo.Guild) {
-	d.connector.Bridge.QueueRemoteEvent(d.UserLogin, &DiscordGuildResync{
-		Client:    d,
-		guild:     guild,
-		portalKey: d.guildPortalKey(guild.ID),
-	})
-}
-
 // bridgedGuildIDs returns a set of guild IDs that should be bridged. Note that
 // presence in the returned set does not imply anything about the corresponding
 // portals and rooms.
@@ -531,6 +523,35 @@ func (d *DiscordClient) deleteGuildPortalSpace(ctx context.Context, guildID stri
 	})
 }
 
+// ensurePortal synchronously guarantees the existence of a portal's Matrix
+// room with up-to-date chat info.
+//
+// If info is nil, then the chat info is fetched from the NetworkAPI.
+func (d *DiscordClient) ensurePortal(ctx context.Context, key networkid.PortalKey, info *bridgev2.ChatInfo) error {
+	portal, err := d.connector.Bridge.GetPortalByKey(ctx, key)
+	if err != nil {
+		return fmt.Errorf("failed to get portal: %w", err)
+	}
+
+	if info == nil {
+		info, err = d.GetChatInfo(ctx, portal)
+		if err != nil {
+			return fmt.Errorf("failed to get chat info: %w", err)
+		}
+	}
+
+	if portal.MXID == "" {
+		// CreateMatrixRoom will indirectly lead to UpdateInfo being called.
+		if err := portal.CreateMatrixRoom(ctx, d.UserLogin, info); err != nil {
+			return fmt.Errorf("failed to create matrix room: %w", err)
+		}
+	} else {
+		portal.UpdateInfo(ctx, info, d.UserLogin, nil, time.Time{})
+	}
+
+	return nil
+}
+
 func (d *DiscordClient) syncGuild(ctx context.Context, guildID string) error {
 	log := zerolog.Ctx(ctx).With().
 		Str("guild_id", guildID).
@@ -549,28 +570,50 @@ func (d *DiscordClient) syncGuild(ctx context.Context, guildID string) error {
 		return fmt.Errorf("failed to sync guild roles during guild sync: %w", err)
 	}
 
-	d.syncGuildSpace(ctx, guild)
+	// Synchronously guarantee the proper creation of the guild space portal so
+	// child rooms are born with the correct `m.bridge` state.
+	portalKey := d.guildPortalKey(guild.ID)
+	if err := d.ensurePortal(ctx, portalKey, nil); err != nil {
+		return fmt.Errorf("failed to ensure guild space portal: %w", err)
+	}
 
+	visibleCategoryIDs := make(exmaps.Set[string])
+	visibleChannels := make([]*discordgo.Channel, 0, len(guild.Channels))
 	for _, guildCh := range guild.Channels {
-		if guildCh.Type != discordgo.ChannelTypeGuildText && guildCh.Type != discordgo.ChannelTypeGuildCategory {
-			// TODO also bridge news channels
-			log.Trace().
-				Str("channel_id", guildCh.ID).
-				Int("channel_type", int(guildCh.Type)).
-				Msg("Not bridging guild channel due to type")
+		// Only bridge text channels that are visible.
+		if guildCh.Type != discordgo.ChannelTypeGuildText || !d.canSeeGuildChannel(ctx, guildCh) {
+			continue
+		}
+		visibleChannels = append(visibleChannels, guildCh)
+		if guildCh.ParentID != "" {
+			visibleCategoryIDs.Add(guildCh.ParentID)
+		}
+	}
+	// Synchronously guarantee the proper creation of category space portals
+	// for the same reason that we do so for guild space portals.
+	//
+	// Note that we only care about syncing categories that contain at least
+	// one channel we can actually see. This matches the behavior of Discord's
+	// first-party clients. The permission bits on the category channel
+	// _itself_ are irrelevant.
+	for categoryID := range visibleCategoryIDs.Iter() {
+		category := d.channelWithID(ctx, categoryID)
+		if category == nil {
+			log.Error().Str("channel_id", categoryID).Msg("Failed to find category channel somehow, proceeding")
 			continue
 		}
 
-		if !d.canSeeGuildChannel(ctx, guildCh) {
-			log.Trace().
-				Str("channel_id", guildCh.ID).
-				Int("channel_type", int(guildCh.Type)).
-				Msg("Not bridging guild channel that the user doesn't have permission to view")
-
-			continue
+		err := d.ensurePortal(ctx, d.portalKeyForChannel(category), nil)
+		if err != nil {
+			log.Err(err).Msg("Failed to ensure category space, proceeding")
+			// FIXME The children of this category channel will still be synced
+			// but with bogus `m.bridge` state.
 		}
-
-		d.syncChannel(ctx, guildCh)
+	}
+	// Now that all possible parent spaces exist, we can fan out the syncing of
+	// all guild channels we can see.
+	for _, visibleCh := range visibleChannels {
+		d.queueChannelResync(ctx, visibleCh)
 	}
 
 	for _, thread := range guild.Threads {
@@ -642,7 +685,7 @@ func (d *DiscordClient) makeEventSender(user *discordgo.User) bridgev2.EventSend
 	return d.makeEventSenderWithID(user.ID)
 }
 
-func (d *DiscordClient) syncChannel(_ context.Context, ch *discordgo.Channel) {
+func (d *DiscordClient) queueChannelResync(_ context.Context, ch *discordgo.Channel) {
 	d.connector.Bridge.QueueRemoteEvent(d.UserLogin, &DiscordChatResync{
 		Client:  d,
 		channel: ch,

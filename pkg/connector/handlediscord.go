@@ -328,7 +328,7 @@ func (d *DiscordClient) handleChannelCreate(ctx context.Context, ch *discordgo.C
 
 	if ch.GuildID == "" {
 		log.Debug().Msg("Private channel was created, creating portal")
-		d.syncChannel(ctx, ch.Channel)
+		d.queueChannelResync(ctx, ch.Channel)
 	} else {
 		log.Debug().Msg("Guild channel was created")
 		// FIXME(skip): Sync guild channels. Same logic as syncGuild.
