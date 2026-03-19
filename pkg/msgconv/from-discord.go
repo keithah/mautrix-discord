@@ -240,7 +240,7 @@ func (mc *MessageConverter) renderDiscordTextMessage(ctx context.Context, intent
 		// changes in the guild system channel and aren't even converted.
 		return &bridgev2.ConvertedMessagePart{Type: event.EventMessage, Content: &event.MessageEventContent{
 			MsgType: event.MsgEmote,
-			Body:    "joined the server",
+			Body:    "(Joined the server.)",
 		}}
 	}
 
