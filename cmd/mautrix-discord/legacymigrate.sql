@@ -176,12 +176,12 @@ SELECT
         WHEN p.type=4 THEN 'space'
         ELSE ''
     END, -- room_type
-    -- only: postgres
+    -- only: postgres for next 4 lines
     jsonb_build_object(
         'guild_id', COALESCE(p.dc_guild_id, ''),
         'channel_type', p.type
     )
-    -- only: sqlite (line commented)
+    -- only: sqlite for next 4 lines (lines commented)
 --  json_object(
 --      'guild_id', COALESCE(p.dc_guild_id, ''),
 --      'channel_type', p.type
