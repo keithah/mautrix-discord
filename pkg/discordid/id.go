@@ -118,6 +118,14 @@ func MakeAvatarID(avatar string) networkid.AvatarID {
 	return networkid.AvatarID(avatar)
 }
 
+func MakePartID(attachmentID string) networkid.PartID {
+	return networkid.PartID(attachmentID)
+}
+
+func ParsePartID(attachmentID string) string {
+	return string(attachmentID)
+}
+
 // The string prepended to [networkid.PortalKey]s identifying spaces that
 // bridge Discord guilds.
 //

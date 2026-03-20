@@ -20,6 +20,8 @@ import (
 	"context"
 	"fmt"
 	"html"
+	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -84,7 +86,14 @@ func (mc *MessageConverter) ToMatrix(
 		}
 
 		log := log.With().Str("attachment_id", att.ID).Logger()
-		if part := mc.renderDiscordAttachment(log.WithContext(ctx), att); part != nil {
+		mediaInfo := discordid.MediaInfo{
+			Type:         discordid.DirectMediaTypeV1,
+			UserLoginID:  source.ID,
+			ChannelID:    msg.ChannelID,
+			MessageID:    msg.ID,
+			AttachmentID: att.ID,
+		}
+		if part := mc.renderDiscordAttachment(log.WithContext(ctx), att, &mediaInfo); part != nil {
 			parts = append(parts, part)
 		}
 	}
@@ -692,25 +701,74 @@ func (mc *MessageConverter) renderDiscordLinkEmbed(ctx context.Context, embed *d
 	return &preview
 }
 
-func (mc *MessageConverter) renderDiscordAttachment(ctx context.Context, att *discordgo.MessageAttachment) *bridgev2.ConvertedMessagePart {
-	// TODO(skip): Support direct media.
-	reupload, err := mc.ReuploadMedia(ctx, att.URL, att.ContentType, att.Filename, att.Size, true)
-	if err != nil {
-		zerolog.Ctx(ctx).Err(err).Msg("Failed to copy attachment to Matrix")
-		return &bridgev2.ConvertedMessagePart{
-			Type:    event.EventMessage,
-			Content: mediaFailedMessage(err),
+func attachmentFileName(att *discordgo.MessageAttachment) (string, error) {
+	fileName := att.Filename
+	if fileName == "" {
+		parsedURL, err := url.Parse(att.URL)
+		if err != nil {
+			return "", fmt.Errorf("couldn't parse URL to detect attachment file name: %w", err)
 		}
+		fileName = path.Base(parsedURL.Path)
+	}
+	return fileName, nil
+}
+
+func conversionFailedPart(err error) *bridgev2.ConvertedMessagePart {
+	return &bridgev2.ConvertedMessagePart{
+		Type:    event.EventMessage,
+		Content: mediaFailedMessage(err),
+	}
+}
+
+func (mc *MessageConverter) renderDiscordAttachment(
+	ctx context.Context,
+	att *discordgo.MessageAttachment,
+	mediaInfo *discordid.MediaInfo,
+) *bridgev2.ConvertedMessagePart {
+	log := zerolog.Ctx(ctx)
+
+	fileName, err := attachmentFileName(att)
+	if err != nil {
+		return conversionFailedPart(err)
 	}
 
+	// (The rest of this function can adjust these fields.)
 	content := &event.MessageEventContent{
-		Body: reupload.FileName,
+		Body: fileName,
 		Info: &event.FileInfo{
 			Width:    att.Width,
 			Height:   att.Height,
-			MimeType: reupload.MimeType,
-			Size:     reupload.Size,
+			MimeType: att.ContentType,
+			Size:     att.Size,
 		},
+	}
+
+	if mc.DirectMedia {
+		mediaID, err := mediaInfo.Encode()
+		if err != nil {
+			log.Err(err).Msg("Failed to encode direct media ID")
+			return conversionFailedPart(err)
+		}
+		mxc, err := mc.Bridge.Matrix.GenerateContentURI(ctx, mediaID)
+		if err != nil {
+			log.Err(err).Msg("Failed to generate content URI")
+			return conversionFailedPart(err)
+		}
+		log.Trace().Str("direct_media_mxc", string(mxc)).Msg("Generated direct media MXC")
+		content.URL = mxc
+	} else {
+		reupload, err := mc.ReuploadMedia(ctx, att.URL, att.ContentType, att.Filename, att.Size, true)
+		if err != nil {
+			zerolog.Ctx(ctx).Err(err).Msg("Failed to copy attachment to Matrix")
+			return &bridgev2.ConvertedMessagePart{
+				Type:    event.EventMessage,
+				Content: mediaFailedMessage(err),
+			}
+		}
+		content.Info.MimeType = reupload.MimeType
+		content.Info.Size = reupload.Size
+		content.URL = reupload.MXC
+		content.File = reupload.File
 	}
 
 	var extra = make(map[string]any)
@@ -721,7 +779,7 @@ func (mc *MessageConverter) renderDiscordAttachment(ctx context.Context, att *di
 
 	if att.Description != "" {
 		content.Body = att.Description
-		content.FileName = reupload.FileName
+		content.FileName = fileName
 	}
 
 	switch strings.ToLower(strings.Split(content.Info.MimeType, "/")[0]) {
@@ -744,16 +802,20 @@ func (mc *MessageConverter) renderDiscordAttachment(ctx context.Context, att *di
 		content.MsgType = event.MsgFile
 	}
 
-	content.URL, content.File = reupload.MXC, reupload.File
-	content.Info.Size = reupload.Size
 	if content.Info.Width == 0 && content.Info.Height == 0 {
 		content.Info.Width = att.Width
 		content.Info.Height = att.Height
 	}
 
-	return &bridgev2.ConvertedMessagePart{
+	part := &bridgev2.ConvertedMessagePart{
+		// TODO: Do this eventually. Edits and replies currently make certain assumptions
+		// about how part IDs are formed to make this safe.
+		//
+		// ID:      discordid.MakePartID(att.ID),
 		Type:    event.EventMessage,
 		Content: content,
 		Extra:   extra,
 	}
+
+	return part
 }

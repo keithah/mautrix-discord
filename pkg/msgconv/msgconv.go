@@ -33,7 +33,8 @@ import (
 )
 
 type MessageConverter struct {
-	Bridge *bridgev2.Bridge
+	Bridge      *bridgev2.Bridge
+	DirectMedia bool
 
 	HTMLParser *format.HTMLParser
 

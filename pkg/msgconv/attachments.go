@@ -23,9 +23,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
-	"path"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/rs/zerolog"
@@ -38,7 +36,6 @@ type ReuploadedAttachment struct {
 	MXC      id.ContentURIString
 	File     *event.EncryptedFileInfo
 	Size     int
-	FileName string
 	MimeType string
 }
 
@@ -62,14 +59,6 @@ func (d *MessageConverter) ReuploadMedia(
 	estimatedSize int,
 	allowEncryption bool,
 ) (*ReuploadedAttachment, error) {
-	if fileName == "" {
-		parsedURL, err := url.Parse(downloadURL)
-		if err != nil {
-			return nil, fmt.Errorf("couldn't parse URL to detect file name: %w", err)
-		}
-		fileName = path.Base(parsedURL.Path)
-	}
-
 	sess := ctx.Value(contextKeyDiscordClient).(*discordgo.Session)
 	httpClient := sess.Client
 	intent := ctx.Value(contextKeyIntent).(bridgev2.MatrixAPI)
@@ -141,7 +130,6 @@ func (d *MessageConverter) ReuploadMedia(
 		Size:     int(size),
 		MXC:      mxc,
 		File:     file,
-		FileName: fileName,
 		MimeType: mimeType,
 	}, nil
 }
