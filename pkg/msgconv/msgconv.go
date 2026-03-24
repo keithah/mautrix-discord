@@ -36,6 +36,8 @@ type MessageConverter struct {
 	Bridge      *bridgev2.Bridge
 	DirectMedia bool
 
+	CacheDirectMediaAttachment func(info *discordid.MediaInfo, discordURL string)
+
 	HTMLParser *format.HTMLParser
 
 	nextDiscordUploadID atomic.Int32

@@ -41,12 +41,28 @@ func (dmt DirectMediaType) isSupported() bool {
 	return false
 }
 
-type MediaInfo struct {
-	Type         DirectMediaType
+type MediaInfoV1 struct {
 	UserLoginID  networkid.UserLoginID
 	ChannelID    string
 	MessageID    string
 	AttachmentID string
+}
+
+type MediaInfo struct {
+	Type DirectMediaType
+	MediaInfoV1
+}
+
+func NewMediaInfoV1(userLoginID networkid.UserLoginID, channelID, messageID, attachmentID string) MediaInfo {
+	return MediaInfo{
+		Type: DirectMediaTypeV1,
+		MediaInfoV1: MediaInfoV1{
+			UserLoginID:  userLoginID,
+			ChannelID:    channelID,
+			MessageID:    messageID,
+			AttachmentID: attachmentID,
+		},
+	}
 }
 
 func (mi *MediaInfo) Encode() ([]byte, error) {

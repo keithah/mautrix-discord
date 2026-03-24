@@ -32,11 +32,12 @@ import (
 )
 
 type DiscordConnector struct {
-	Bridge     *bridgev2.Bridge
-	Config     Config
-	DB         *discorddb.DiscordDB
-	MsgConv    *msgconv.MessageConverter
-	httpClient *http.Client
+	Bridge          *bridgev2.Bridge
+	Config          Config
+	DB              *discorddb.DiscordDB
+	MsgConv         *msgconv.MessageConverter
+	attachmentCache *attachmentCache
+	httpClient      *http.Client
 }
 
 var (
@@ -49,6 +50,8 @@ func (d *DiscordConnector) Init(bridge *bridgev2.Bridge) {
 	d.Bridge = bridge
 	d.DB = discorddb.New(bridge.DB.Database, bridge.Log.With().Str("db_section", "discord").Logger())
 	d.MsgConv = msgconv.NewMessageConverter(bridge)
+	d.attachmentCache = NewAttachmentCache()
+	d.MsgConv.CacheDirectMediaAttachment = d.attachmentCache.Insert
 	d.httpClient = d.Bridge.GetHTTPClientSettings().Compile()
 }
 

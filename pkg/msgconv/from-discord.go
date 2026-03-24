@@ -86,13 +86,7 @@ func (mc *MessageConverter) ToMatrix(
 		}
 
 		log := log.With().Str("attachment_id", att.ID).Logger()
-		mediaInfo := discordid.MediaInfo{
-			Type:         discordid.DirectMediaTypeV1,
-			UserLoginID:  source.ID,
-			ChannelID:    msg.ChannelID,
-			MessageID:    msg.ID,
-			AttachmentID: att.ID,
-		}
+		mediaInfo := discordid.NewMediaInfoV1(source.ID, msg.ChannelID, msg.ID, att.ID)
 		if part := mc.renderDiscordAttachment(log.WithContext(ctx), att, &mediaInfo); part != nil {
 			parts = append(parts, part)
 		}
@@ -744,6 +738,10 @@ func (mc *MessageConverter) renderDiscordAttachment(
 	}
 
 	if mc.DirectMedia {
+		if mc.CacheDirectMediaAttachment != nil {
+			mc.CacheDirectMediaAttachment(mediaInfo, att.URL)
+		}
+
 		mediaID, err := mediaInfo.Encode()
 		if err != nil {
 			log.Err(err).Msg("Failed to encode direct media ID")

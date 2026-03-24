@@ -58,13 +58,12 @@ func TestMediaIDRoundTrip(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			want := MediaInfo{
-				Type:         DirectMediaTypeV1,
-				UserLoginID:  MakeUserLoginID(tc.userLoginID),
-				ChannelID:    tc.channelID,
-				MessageID:    tc.messageID,
-				AttachmentID: tc.attachmentID,
-			}
+			want := NewMediaInfoV1(
+				MakeUserLoginID(tc.userLoginID),
+				tc.channelID,
+				tc.messageID,
+				tc.attachmentID,
+			)
 
 			encoded, err := want.Encode()
 			if err != nil {
@@ -86,13 +85,12 @@ func TestMediaIDRoundTrip(t *testing.T) {
 }
 
 func TestParseMediaIDRejectsTruncatedData(t *testing.T) {
-	info := MediaInfo{
-		Type:         DirectMediaTypeV1,
-		UserLoginID:  MakeUserLoginID("123456789012345678"),
-		ChannelID:    "223456789012345678",
-		MessageID:    "323456789012345678",
-		AttachmentID: "423456789012345678",
-	}
+	info := NewMediaInfoV1(
+		MakeUserLoginID("123456789012345678"),
+		"223456789012345678",
+		"323456789012345678",
+		"423456789012345678",
+	)
 
 	encoded, err := info.Encode()
 	if err != nil {

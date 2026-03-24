@@ -59,7 +59,7 @@ func (dc *DiscordConnector) downloadAttachment(
 	ctx context.Context,
 	info *discordid.MediaInfo,
 ) (*mediaproxy.GetMediaResponseURL, error) {
-	url, expiresAt, err := dc.refreshAttachmentURL(ctx, info)
+	url, expiresAt, err := dc.resolveAttachmentURL(ctx, info)
 	if err != nil {
 		return nil, fmt.Errorf("failed to refresh attachment url for download: %w", err)
 	}
@@ -72,6 +72,20 @@ func (dc *DiscordConnector) downloadAttachment(
 		URL:       url,
 		ExpiresAt: expiresAt,
 	}, nil
+}
+
+func (dc *DiscordConnector) resolveAttachmentURL(ctx context.Context, info *discordid.MediaInfo) (url string, expires time.Time, err error) {
+	if entry, ok := dc.attachmentCache.Get(info.MediaInfoV1); ok {
+		return entry.URL, entry.Expiry, nil
+	}
+
+	url, expiresAt, err := dc.refreshAttachmentURL(ctx, info)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+
+	dc.attachmentCache.Insert(info, url)
+	return url, expiresAt, nil
 }
 
 func (dc *DiscordConnector) refreshAttachmentURL(
@@ -138,7 +152,7 @@ func (dc *DiscordConnector) refreshAttachmentURL(
 	for _, msg := range messages {
 		for _, att := range msg.Attachments {
 			if att.ID == attachmentID {
-				expiresAt := parseAttachmentExpiryFromURL(att.URL)
+				expiresAt := normalizeAttachmentExpiry(parseAttachmentExpiryFromURL(att.URL))
 				// (Trace is not the default log level, so this is only visible
 				// in development scenarios.)
 				log.Trace().
@@ -147,6 +161,7 @@ func (dc *DiscordConnector) refreshAttachmentURL(
 					Str("attachment_id", attachmentID).
 					Time("expires_at", expiresAt).
 					Msg("Resolved direct media attachment URL")
+				// TODO(skip): This is ignoring the rest of the attachments.
 				return att.URL, expiresAt, nil
 			}
 		}
@@ -178,4 +193,13 @@ func parseAttachmentExpiryFromURL(rawURL string) time.Time {
 	}
 
 	return parseAttachmentExpiryParam(parsedURL.Query().Get("ex"))
+}
+
+func normalizeAttachmentExpiry(expiry time.Time) time.Time {
+	// Default to a validity period of 24 hours.
+	if expiry.IsZero() {
+		return time.Now().Add(24 * time.Hour)
+	}
+
+	return expiry
 }
