@@ -80,7 +80,10 @@ type SuperProperties struct {
 var _ encoding.TextMarshaler = (*SuperProperties)(nil)
 
 func (sp *SuperProperties) MarshalText() ([]byte, error) {
-	spJson, err := json.Marshal(sp)
+	// TODO(skip): Little bit of weird looking indirection here so we don't
+	// recurse infinitely. Should probably just remove this, then.
+	type superProperties SuperProperties
+	spJson, err := json.Marshal((*superProperties)(sp))
 	if err != nil {
 		return nil, err
 	}
