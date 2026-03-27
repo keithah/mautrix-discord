@@ -57,7 +57,7 @@ type AuthMachineState struct {
 type CaptchaSolution struct {
 	Solution string
 }
-type CaptchaHandler func(ctx context.Context, captcha *Captcha, solution chan<- CaptchaSolution)
+type CaptchaHandler func(ctx context.Context, captcha *Captcha) (*CaptchaSolution, error)
 
 func NewAuthMachine(ctx context.Context, http HTTP, personality *Personality) *AuthMachine {
 	if http == nil {
@@ -182,18 +182,16 @@ func (am *AuthMachine) waitForCaptchaSolve(ctx context.Context, captcha *Captcha
 		return nil, fmt.Errorf("received a CAPTCHA but don't have a handler")
 	}
 
-	solutionCh := make(chan CaptchaSolution)
-	log.Info().Msg("Invoking CAPTCHA handler in a goroutine")
-	go handler(ctx, captcha, solutionCh)
-
-	log.Info().Msg("Going to wait for CAPTCHA solution")
-	select {
-	case solution := <-solutionCh:
-		return &solution, nil
-	case <-ctx.Done():
-		log.Info().Msg("Canceled while waiting for CAPTCHA")
-		return nil, ctx.Err()
+	log.Info().Msg("Invoking CAPTCHA handler")
+	solution, err := handler(ctx, captcha)
+	if err != nil {
+		return nil, fmt.Errorf("captcha handler failed: %w", err)
 	}
+	if solution == nil {
+		return nil, fmt.Errorf("captcha handler returned nil solution")
+	}
+
+	return solution, nil
 }
 
 // doHandlingCaptcha performs an HTTP request, mutating it to contain headers
