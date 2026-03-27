@@ -46,7 +46,7 @@ func run() error {
 
 	flag.IntVar(&buildNumberFlag, "build-number", 0, "Discord client build number (default: auto-detect from discord.com)")
 	flag.StringVar(&apiBase, "api-base", "https://discord.com/api/v9", "Discord API base URL")
-	flag.BoolVar(&verbose, "verbose", false, "Enable verbose auth logging")
+	flag.BoolVar(&verbose, "verbose", false, "Lower the log level to debug")
 	flag.Parse()
 
 	log := zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339}).
@@ -69,11 +69,19 @@ func run() error {
 		Timeout: 30 * time.Second,
 		Jar:     jar,
 	}
-	prompter := newPrompter(os.Stdin, os.Stdout)
+	captchaServer := newCaptchaServer(log.With().Str("component", "authtester captcha").Logger())
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := captchaServer.Close(shutdownCtx); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to gracefully terminate CAPTCHA server: %v\n", err)
+		}
+	}()
+	prompter := newPrompter(os.Stdin, os.Stdout, captchaServer)
 
 	buildNumber := buildNumberFlag
 	if buildNumber == 0 {
-		fmt.Fprintln(os.Stdout, "Detecting Discord client build number...")
+		fmt.Fprintln(os.Stdout, "Detecting an appropriate Discord client build number...")
 		buildNumber, err = fetchClientBuildNumber(ctx, client)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to detect build number automatically: %v\n", err)
@@ -251,18 +259,20 @@ func addHeaders(header http.Header, values map[string]string) {
 }
 
 type prompter struct {
-	in     *bufio.Reader
-	inFile *os.File
-	out    io.Writer
+	in            *bufio.Reader
+	inFile        *os.File
+	out           io.Writer
+	captchaServer *captchaServer
 }
 
-func newPrompter(in io.Reader, out io.Writer) *prompter {
+func newPrompter(in io.Reader, out io.Writer, captchaServer *captchaServer) *prompter {
 	file, _ := in.(*os.File)
 
 	return &prompter{
-		in:     bufio.NewReader(in),
-		inFile: file,
-		out:    out,
+		in:            bufio.NewReader(in),
+		inFile:        file,
+		out:           out,
+		captchaServer: captchaServer,
 	}
 }
 
@@ -318,7 +328,7 @@ func (p *prompter) promptSecret(label string) (string, error) {
 	return strings.TrimRight(string(line), "\r\n"), nil
 }
 
-func (p *prompter) handleCaptcha(_ context.Context, captcha *discordauth.Captcha) (*discordauth.CaptchaSolution, error) {
+func (p *prompter) handleCaptcha(ctx context.Context, captcha *discordauth.Captcha) (*discordauth.CaptchaSolution, error) {
 	captchaData, err := json.MarshalIndent(captcha, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode captcha challenge: %w", err)
@@ -327,6 +337,35 @@ func (p *prompter) handleCaptcha(_ context.Context, captcha *discordauth.Captcha
 	fmt.Fprintln(p.out)
 	fmt.Fprintln(p.out, "Received CAPTCHA challenge:")
 	fmt.Fprintln(p.out, string(captchaData))
+
+	if p.captchaServer != nil && supportsBrowserCaptcha(captcha) {
+		pageURL, waitForSolution, err := p.captchaServer.startChallenge(captcha)
+		if err != nil {
+			fmt.Fprintf(p.out, "Failed to start local CAPTCHA page: %v\n", err)
+			fmt.Fprintln(p.out, "Falling back to manual token entry.")
+		} else {
+			fmt.Fprintln(p.out)
+			fmt.Fprintln(p.out, "Open this page in your browser and solve the CAPTCHA:")
+			fmt.Fprintf(p.out, "  %s\n", pageURL)
+			fmt.Fprintln(p.out, "If the page reports an error or you cancel it, authtester will fall back to manual token entry.")
+
+			solution, err := waitForSolution(ctx)
+			switch {
+			case err == nil:
+				return &discordauth.CaptchaSolution{Solution: solution}, nil
+			case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+				return nil, err
+			case errors.Is(err, errCaptchaBrowserCanceled):
+				fmt.Fprintln(p.out, "Local CAPTCHA page was canceled.")
+				fmt.Fprintln(p.out, "Falling back to manual token entry.")
+			default:
+				fmt.Fprintf(p.out, "Local CAPTCHA page failed: %v\n", err)
+				fmt.Fprintln(p.out, "Falling back to manual token entry.")
+			}
+		}
+	} else {
+		fmt.Fprintln(p.out, "Local browser flow only supports hCaptcha challenges with a sitekey.")
+	}
 
 	solution, err := p.promptRequired("CAPTCHA solution")
 	if err != nil {
