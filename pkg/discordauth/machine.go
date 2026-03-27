@@ -306,6 +306,9 @@ func (am *AuthMachine) Prepare(ctx context.Context) error {
 	// (Apex experiments aren't fetched with the fingerprint, so only set it
 	// now.)
 	am.State.Fingerprint = legacy.Fingerprint
+	if am.LogFilters.Fingerprint {
+		log.Info().Str("fingerprint", am.State.Fingerprint.HeaderValue()).Msg("Loaded Discord fingerprint")
+	}
 
 	return nil
 }
