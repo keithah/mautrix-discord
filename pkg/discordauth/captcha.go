@@ -24,6 +24,10 @@ import (
 	"github.com/rs/zerolog"
 )
 
+const HeaderCaptchaKey = "x-captcha-key"
+const HeaderCaptchaSessionID = "x-captcha-session-id"
+const HeaderCaptchaRqToken = "x-captcha-rqtoken"
+
 type CaptchaService string
 
 const (

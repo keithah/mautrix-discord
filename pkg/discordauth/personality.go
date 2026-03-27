@@ -26,6 +26,13 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
+const HeaderDiscordLocale = "x-discord-locale"
+const HeaderDiscordTimezone = "x-discord-timezone"
+const HeaderSuperProperties = "x-super-properties"
+const HeaderContextProperties = "x-context-properties"
+const HeaderFingerprint = "x-fingerprint"
+const HeaderDebugOptions = "x-debug-options"
+
 // Personality encapsulates some settings that clients are likely to want to
 // customize. These values are sent in nearly every HTTP request to Discord.
 type Personality struct {

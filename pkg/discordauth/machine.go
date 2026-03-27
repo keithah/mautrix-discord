@@ -346,6 +346,7 @@ func (am *AuthMachine) Prepare(ctx context.Context) error {
 	return nil
 }
 
+// FIXME(skip): Load the HTML /login page before anything else so we can seed our cookies with Cloudflare stuff.
 // FIXME(skip): Handle IP verification.
 // FIXME(skip): Handle MFA (TOTP).
 // FIXME(skip): Handle MFA (TOTP backup).
