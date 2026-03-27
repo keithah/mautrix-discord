@@ -280,7 +280,7 @@ func (am *AuthMachine) performApexExperiments(ctx context.Context) (any, error) 
 	// (Apex experiments don't get `X-Context-Properties`.)
 	_, _, err = am.doHandlingCaptcha(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to request legacy experiments: %w", err)
+		return nil, fmt.Errorf("failed to request apex experiments: %w", err)
 	}
 
 	return nil, nil
@@ -336,7 +336,7 @@ func (am *AuthMachine) Login(ctx context.Context, creds *Creds) (*LoginResponse,
 
 	_, body, err := am.doHandlingCaptcha(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to request legacy experiments: %w", err)
+		return nil, fmt.Errorf("failed to request login: %w", err)
 	}
 
 	var loginResponse LoginResponse
