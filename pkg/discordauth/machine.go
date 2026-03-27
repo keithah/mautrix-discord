@@ -1,0 +1,330 @@
+// mautrix-discord - A Matrix-Discord puppeting bridge.
+// Copyright (C) 2026 Tulir Asokan
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+package discordauth
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"maps"
+	"net/http"
+
+	"github.com/rs/zerolog"
+	"go.mau.fi/util/ptr"
+)
+
+// An AuthMachine governs the core logic to authenticate with Discord. It is
+// concerned with:
+//
+//   - Detecting CAPTCHA challenges.
+//   - Sending the correct set of headers to each endpoint.
+//   - Stashing the necessary state in-memory and threading them into requests
+//     as necessary.
+type AuthMachine struct {
+	log        *zerolog.Logger
+	LogFilters AuthMachineLogFilters
+
+	http           HTTP
+	APIBase        string
+	CaptchaHandler CaptchaHandler
+
+	State AuthMachineState
+
+	debugOptions string // `x-debug-options`
+	Personality  *Personality
+}
+
+type AuthMachineState struct {
+	Fingerprint Fingerprint
+}
+
+type CaptchaSolution struct {
+	Solution string
+}
+type CaptchaHandler func(ctx context.Context, captcha *Captcha, solution chan<- CaptchaSolution)
+
+func NewAuthMachine(ctx context.Context, http HTTP, personality *Personality) *AuthMachine {
+	if http == nil {
+		panic("http interface is required")
+	}
+	if personality == nil {
+		panic("personality is required")
+	}
+
+	log := zerolog.Ctx(ctx).With().Str("component", "discord auth").Logger()
+
+	return &AuthMachine{
+		log:  &log,
+		http: http,
+
+		APIBase:      "https://discord.com/api/v9",
+		debugOptions: "bugReporterEnabled",
+		Personality:  personality,
+	}
+}
+
+func (am *AuthMachine) captchaRetryLoop(ctx context.Context, req *http.Request) (*http.Response, []byte, error) {
+	// Check if we can clone the request body. We need this since we might need
+	// to retry the request.
+	if req.GetBody == nil && req.ContentLength > 0 {
+		return nil, nil, fmt.Errorf("tried to make request with a body that isn't retriable")
+	}
+
+	log := zerolog.Ctx(ctx)
+	nCaptchas := 0
+	var resp *http.Response
+	var err error
+
+	defer func() {
+		if resp == nil {
+			return
+		}
+
+		respLogLevel := zerolog.DebugLevel
+		respStatusOk := respIsOk(resp)
+		if !respStatusOk {
+			respLogLevel = zerolog.ErrorLevel
+		}
+
+		if am.LogFilters.EveryHTTPResponse || !respStatusOk {
+			// Erroneous responses are always logged.
+			log.WithLevel(respLogLevel).
+				Int("n_captchas", nCaptchas).
+				Int("http_status", resp.StatusCode).
+				Int("http_content_length", int(resp.ContentLength)).
+				Msg("Received response")
+		}
+	}()
+
+	for {
+		if am.LogFilters.EveryHTTPRequest {
+			log.Debug().
+				Int("n_captchas", nCaptchas).
+				Msg("Making request")
+		}
+
+		// Make the HTTP request.
+		resp, err = am.http.Do(req)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to make http request: %w", err)
+		}
+
+		// We need to consume the entire response body so we can test for a
+		// CAPTCHA challenge.
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to slurp http response body: %w", err)
+		}
+		if err := resp.Body.Close(); err != nil {
+			log.Warn().Err(err).Msg("Failed to close response body, proceeding")
+		}
+
+		captcha := TryUnmarshalingCaptcha(ctx, resp, body)
+		if captcha != nil {
+			goto solveCaptchaAndRetry
+		}
+
+		if !respIsOk(resp) {
+			// (defer block above logs for us.)
+			return nil, nil, HTTPError{body: body, resp: resp}
+		}
+
+		// No CAPTCHA, we're good.
+		return resp, body, nil
+
+	solveCaptchaAndRetry:
+		// We got a CAPTCHA. Invoke the handler provided by the client and
+		// retry with the challenge response once the CAPTCHA is completed.
+
+		log = ptr.Ptr(captcha.LogContext(log.With()).Logger())
+		log.Info().Msg("Encountered CAPTCHA challenge")
+
+		solution, err := am.waitForCaptchaSolve(ctx, captcha)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to wait for captcha solution: %w", err)
+		}
+
+		// We're going to try the request again once we come back around in the
+		// loop.
+		req, err = refreshReq(ctx, req)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to refresh request: %w", err)
+		}
+		// Add the solution and other CAPTCHA state to the headers.
+		req.Header.Set(HeaderCaptchaKey, solution.Solution)
+		captcha.UpdateHeaders(&req.Header)
+	}
+}
+
+func (am *AuthMachine) waitForCaptchaSolve(ctx context.Context, captcha *Captcha) (*CaptchaSolution, error) {
+	log := zerolog.Ctx(ctx).With().Str("action", "wait for discord captcha solve").Logger()
+	ctx = log.WithContext(ctx)
+
+	handler := am.CaptchaHandler
+	if handler == nil {
+		// TODO(skip): Just make it required?
+		return nil, fmt.Errorf("received a CAPTCHA but don't have a handler")
+	}
+
+	solutionCh := make(chan CaptchaSolution)
+	log.Info().Msg("Invoking CAPTCHA handler in a goroutine")
+	go handler(ctx, captcha, solutionCh)
+
+	log.Info().Msg("Going to wait for CAPTCHA solution")
+	select {
+	case solution := <-solutionCh:
+		return &solution, nil
+	case <-ctx.Done():
+		log.Info().Msg("Canceled while waiting for CAPTCHA")
+		return nil, ctx.Err()
+	}
+}
+
+// doHandlingCaptcha performs an HTTP request, mutating it to contain headers
+// from the [Personality].
+//
+//   - In order to detect and respond to CAPTCHA challenges, this method buffers
+//     all request and response bodies into memory.
+//
+//   - Should a CAPTCHA challenge occur, note that multiple attempts to solve the
+//     CAPTCHA may be necessary.
+func (am *AuthMachine) doHandlingCaptcha(ctx context.Context, req *http.Request) (*http.Response, []byte, error) {
+	log := zerolog.Ctx(ctx).With().
+		Str("http_method", req.Method).
+		Stringer("http_url", req.URL).
+		Logger()
+	ctx = log.WithContext(ctx)
+
+	// Add all personality headers to the request.
+	personalityHeaders, err := am.Personality.Headers()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get personality headers: %w", err)
+	}
+	maps.Copy(req.Header, personalityHeaders)
+	// Set X-Fingerprint if we have one.
+	if !am.State.Fingerprint.IsZero() {
+		req.Header.Set(HeaderFingerprint, am.State.Fingerprint.HeaderValue())
+	}
+
+	// Make the request, anticipating any potential CAPTCHAs.
+	resp, body, err := am.captchaRetryLoop(ctx, req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to make request: %w", err)
+	}
+
+	return resp, body, err
+}
+
+func (am *AuthMachine) performLegacyExperiments(ctx context.Context) (*ExperimentsLegacy, error) {
+	url := fmt.Sprintf("%s/experiments?with_guild_experiments=true", am.APIBase)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to construct legacy experiments request: %w", err)
+	}
+
+	// Set X-Context-Properties.
+	contextProps, err := EncodeBasicContextProperties(ContextLocationLogin)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode login context properties: %w", err)
+	}
+	req.Header.Set(HeaderContextProperties, contextProps)
+
+	_, body, err := am.doHandlingCaptcha(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to request legacy experiments: %w", err)
+	}
+
+	var legacy ExperimentsLegacy
+	err = json.Unmarshal(body, &legacy)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode legacy experiments: %w", err)
+	}
+
+	return &legacy, nil
+}
+
+func (am *AuthMachine) performApexExperiments(ctx context.Context) (any, error) {
+	url := fmt.Sprintf("%s/apex/experiments?surface=2", am.APIBase)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to construct apex experiments request: %w", err)
+	}
+
+	// (Apex experiments don't get `X-Context-Properties`.)
+	_, _, err = am.doHandlingCaptcha(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to request legacy experiments: %w", err)
+	}
+
+	return nil, nil
+}
+
+// Prepare loads the login page and situates the AuthMachine with an
+// experiments-related [Fingerprint].
+func (am *AuthMachine) Prepare(ctx context.Context) error {
+	log := am.log.With().Str("action", "prepare discord auth machine").Logger()
+	ctx = log.WithContext(ctx)
+	log.Info().Msg("Preparing Discord auth")
+
+	legacy, err := am.performLegacyExperiments(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to perform legacy experiments: %w", err)
+	}
+
+	_, err = am.performApexExperiments(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to perform apex experiments: %w", err)
+	}
+
+	// (Apex experiments aren't fetched with the fingerprint, so only set it
+	// now.)
+	am.State.Fingerprint = legacy.Fingerprint
+
+	return nil
+}
+
+// FIXME(skip): Handle IP verification.
+// FIXME(skip): Handle MFA (TOTP).
+// FIXME(skip): Handle MFA (TOTP backup).
+// FIXME(skip): Handle MFA (SMS).
+// FIXME(skip): Handle suspended user tokens.
+
+func (am *AuthMachine) Login(ctx context.Context, creds *Creds) (any, error) {
+	if am.State.Fingerprint.IsZero() {
+		return nil, fmt.Errorf("can't log in without a fingerprint (forgot to call Prepare?)")
+	}
+
+	credsBody, err := json.Marshal(creds)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal creds: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/auth/login", am.APIBase)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(credsBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to construct login request: %w", err)
+	}
+
+	_, _, err = am.doHandlingCaptcha(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to request legacy experiments: %w", err)
+	}
+
+	return nil, nil
+}
