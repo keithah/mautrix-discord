@@ -21,6 +21,7 @@ const HeaderDiscordTimezone = "x-discord-timezone"
 const HeaderSuperProperties = "x-super-properties"
 const HeaderContextProperties = "x-context-properties"
 const HeaderFingerprint = "x-fingerprint"
+const HeaderDebugOptions = "x-debug-options"
 
 const HeaderCaptchaKey = "x-captcha-key"
 const HeaderCaptchaSessionID = "x-captcha-session-id"

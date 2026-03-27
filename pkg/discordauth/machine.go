@@ -225,6 +225,9 @@ func (am *AuthMachine) doHandlingCaptcha(ctx context.Context, req *http.Request)
 		return nil, nil, fmt.Errorf("failed to get personality headers: %w", err)
 	}
 	maps.Copy(req.Header, personalityHeaders)
+	if am.debugOptions != "" {
+		req.Header.Set(HeaderDebugOptions, am.debugOptions)
+	}
 	// Set X-Fingerprint if we have one.
 	if !am.State.Fingerprint.IsZero() {
 		req.Header.Set(HeaderFingerprint, am.State.Fingerprint.HeaderValue())
