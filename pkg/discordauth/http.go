@@ -42,10 +42,10 @@ type HTTPError struct {
 
 func (err HTTPError) Error() string {
 	if err.body != nil && len(err.body) < 1_024*16 { // arbitrarily cap at 16 KiB
-		return fmt.Sprintf("Received HTTP %d from Discord: %s", err.resp.StatusCode, string(err.body))
+		return fmt.Sprintf("Discord replied with HTTP %d: %s", err.resp.StatusCode, string(err.body))
 	}
 
-	return fmt.Sprintf("Received HTTP %d from Discord", err.resp.StatusCode)
+	return fmt.Sprintf("Discord replied with HTTP %d", err.resp.StatusCode)
 }
 
 func refreshReq(ctx context.Context, req *http.Request) (*http.Request, error) {

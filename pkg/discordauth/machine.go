@@ -142,7 +142,17 @@ func (am *AuthMachine) captchaRetryLoop(ctx context.Context, req *http.Request) 
 
 		if !respIsOk(resp) {
 			// (defer block above logs for us.)
-			return nil, nil, HTTPError{body: body, resp: resp}
+
+			var apiError APIError
+			err := json.Unmarshal(body, &apiError)
+
+			if err != nil || apiError.Code == 0 {
+				// Doesn't look like we got {"code": 00000, "message": "..."}
+				return nil, nil, HTTPError{body: body, resp: resp}
+			} else {
+				apiError.ResponseBody = body
+				return nil, nil, apiError
+			}
 		}
 
 		// No CAPTCHA, we're good.
