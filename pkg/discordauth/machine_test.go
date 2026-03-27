@@ -16,9 +16,10 @@ func (thc testHTTPClient) Do(req *http.Request) (*http.Response, error) {
 
 func newTestPersonality() *Personality {
 	return &Personality{
-		UserAgent: "test-agent",
-		Locale:    "en-US",
-		TimeZone:  "UTC",
+		UserAgent:    "test-agent",
+		Locale:       "en-US",
+		TimeZone:     "UTC",
+		DebugOptions: DefaultDebugOptions,
 		SuperProperties: SuperProperties{
 			OS:                "Windows",
 			Browser:           "Chrome",

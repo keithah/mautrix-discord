@@ -48,8 +48,7 @@ type AuthMachine struct {
 
 	State AuthMachineState
 
-	debugOptions string // `x-debug-options`
-	Personality  *Personality
+	Personality *Personality
 }
 
 type AuthMachineState struct {
@@ -75,9 +74,8 @@ func NewAuthMachine(ctx context.Context, http HTTP, personality *Personality) *A
 		log:  &log,
 		http: http,
 
-		APIBase:      "https://discord.com/api/v9",
-		debugOptions: "bugReporterEnabled",
-		Personality:  personality,
+		APIBase:     "https://discord.com/api/v9",
+		Personality: personality,
 	}
 }
 
@@ -258,8 +256,10 @@ func (am *AuthMachine) doHandlingCaptcha(ctx context.Context, req *http.Request)
 		return nil, nil, fmt.Errorf("failed to get personality headers: %w", err)
 	}
 	maps.Copy(req.Header, personalityHeaders)
-	if am.debugOptions != "" {
-		req.Header.Set(HeaderDebugOptions, am.debugOptions)
+	// Set X-Debug-Options if we have one.
+	debugOptions := am.Personality.DebugOptions
+	if debugOptions != "" {
+		req.Header.Set(HeaderDebugOptions, debugOptions)
 	}
 	// Set X-Fingerprint if we have one.
 	if !am.State.Fingerprint.IsZero() {

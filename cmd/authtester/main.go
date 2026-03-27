@@ -148,9 +148,10 @@ func newDefaultPersonality(buildNumber int) (*discordauth.Personality, error) {
 	delete(extraHeaders, "User-Agent")
 
 	return &discordauth.Personality{
-		UserAgent: discordgo.DroidBrowserUserAgent,
-		Locale:    "en-US",
-		TimeZone:  defaultTimeZone(),
+		UserAgent:    discordgo.DroidBrowserUserAgent,
+		Locale:       "en-US",
+		TimeZone:     defaultTimeZone(),
+		DebugOptions: discordauth.DefaultDebugOptions,
 		SuperProperties: discordauth.SuperProperties{
 			OS:                "Windows",
 			Browser:           "Chrome",

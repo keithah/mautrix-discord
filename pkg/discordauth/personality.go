@@ -33,12 +33,15 @@ const HeaderContextProperties = "x-context-properties"
 const HeaderFingerprint = "x-fingerprint"
 const HeaderDebugOptions = "x-debug-options"
 
+const DefaultDebugOptions = "bugReporterEnabled"
+
 // Personality encapsulates some settings that clients are likely to want to
 // customize. These values are sent in nearly every HTTP request to Discord.
 type Personality struct {
 	UserAgent       string
 	Locale          string          // `x-discord-locale`
 	TimeZone        string          // `x-discord-timezone`
+	DebugOptions    string          // `x-debug-options`
 	SuperProperties SuperProperties // `x-super-properties` (base64)
 
 	ExtraHeaders map[string]string
