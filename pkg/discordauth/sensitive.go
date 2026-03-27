@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
 )
 
 // Sensitive is a trivial mitigation that guards against accidental leakage of
@@ -33,6 +34,10 @@ var _ json.Marshaler = (*Sensitive[any])(nil)
 
 func NewSensitive[T any](inner T) Sensitive[T] {
 	return Sensitive[T]{inner}
+}
+
+func (s Sensitive[T]) IsZero() bool {
+	return reflect.ValueOf(s.inner).IsZero()
 }
 
 // UnwrapSensitive returns the sensitive data inside.

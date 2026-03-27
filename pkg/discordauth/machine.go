@@ -313,7 +313,9 @@ func (am *AuthMachine) Prepare(ctx context.Context) error {
 // FIXME(skip): Handle MFA (SMS).
 // FIXME(skip): Handle suspended user tokens.
 
-func (am *AuthMachine) Login(ctx context.Context, creds *Creds) (any, error) {
+func (am *AuthMachine) Login(ctx context.Context, creds *Creds) (*LoginResponse, error) {
+	log := zerolog.Ctx(ctx)
+
 	if am.State.Fingerprint.IsZero() {
 		return nil, fmt.Errorf("can't log in without a fingerprint (forgot to call Prepare?)")
 	}
@@ -329,10 +331,28 @@ func (am *AuthMachine) Login(ctx context.Context, creds *Creds) (any, error) {
 		return nil, fmt.Errorf("failed to construct login request: %w", err)
 	}
 
-	_, _, err = am.doHandlingCaptcha(ctx, req)
+	_, body, err := am.doHandlingCaptcha(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to request legacy experiments: %w", err)
 	}
 
-	return nil, nil
+	var loginResponse LoginResponse
+	err = json.Unmarshal(body, &loginResponse)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal login response: %w", err)
+	}
+	if loginResponse.Token.IsZero() || loginResponse.UserID == "" {
+		log.Error().Str("response_body", string(body)).Msg("Received corrupted login response")
+		return nil, fmt.Errorf("corrupted login response")
+	}
+
+	if am.LogFilters.SuccessfulLogin {
+		ev := log.Info()
+		if am.LogFilters.LoggedInUserID {
+			ev = ev.Str("user_id", loginResponse.UserID).Str("user_locale", loginResponse.UserSettings.Locale)
+		}
+		ev.Msg("Logged in successfully")
+	}
+
+	return &loginResponse, nil
 }

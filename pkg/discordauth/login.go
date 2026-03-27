@@ -35,3 +35,14 @@ func NewCreds(emailOrPhone string, password string) *Creds {
 		Undelete: false,
 	}
 }
+
+type LoginResponse struct {
+	Token        Sensitive[string] `json:"token"`
+	UserID       string            `json:"user_id"`
+	UserSettings UserSettings      `json:"user_settings"`
+}
+
+type UserSettings struct {
+	Locale string `json:"locale"`
+	Theme  string `json:"theme"`
+}

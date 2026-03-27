@@ -20,17 +20,24 @@ type AuthMachineLogFilters struct {
 	EveryHTTPRequest  bool
 	EveryHTTPResponse bool
 
+	SuccessfulLogin bool
+	LoggedInUserID  bool
+
 	Fingerprint bool
 }
 
 var VerboseAuthMachineLogFilters = AuthMachineLogFilters{
 	EveryHTTPRequest:  true,
 	EveryHTTPResponse: true,
+	SuccessfulLogin:   true,
+	LoggedInUserID:    true,
 	Fingerprint:       true,
 }
 
 var DefaultAuthMachineLogFilters = AuthMachineLogFilters{
 	EveryHTTPRequest:  true,
 	EveryHTTPResponse: true,
+	SuccessfulLogin:   true,
+	LoggedInUserID:    false,
 	Fingerprint:       false,
 }
