@@ -56,6 +56,8 @@ func (p *Personality) Headers() (http.Header, error) {
 	return header, nil
 }
 
+// FIXME(skip): This is missing client_heartbeat_session_id... that's only
+// relevant when you have a gateway connection, though (?)
 type SuperProperties struct {
 	OS                     string                    `json:"os"`
 	Browser                string                    `json:"browser"`
