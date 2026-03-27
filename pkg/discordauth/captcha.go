@@ -101,7 +101,7 @@ func TryUnmarshalingCaptcha(ctx context.Context, resp *http.Response, body []byt
 		return nil
 	}
 
-	if challenge.Key != nil && len(challenge.Key) > 0 {
+	if len(challenge.Key) > 0 {
 		return &challenge
 	}
 
