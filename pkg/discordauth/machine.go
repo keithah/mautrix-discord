@@ -336,6 +336,7 @@ func (am *AuthMachine) Login(ctx context.Context, creds *Creds) (*LoginResponse,
 	if err != nil {
 		return nil, fmt.Errorf("failed to construct login request: %w", err)
 	}
+	req.Header.Set("Content-Type", "application/json")
 
 	_, body, err := am.doHandlingCaptcha(ctx, req)
 	if err != nil {
