@@ -31,6 +31,7 @@ type Sensitive[T any] struct {
 }
 
 var _ json.Marshaler = (*Sensitive[any])(nil)
+var _ json.Unmarshaler = (*Sensitive[any])(nil)
 
 func NewSensitive[T any](inner T) Sensitive[T] {
 	return Sensitive[T]{inner}
@@ -59,4 +60,8 @@ func (Sensitive[T]) GoString() string {
 
 func (s Sensitive[T]) MarshalJSON() ([]byte, error) {
 	return json.Marshal(s.inner)
+}
+
+func (s *Sensitive[T]) UnmarshalJSON(data []byte) error {
+	return json.Unmarshal(data, &s.inner)
 }
