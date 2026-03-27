@@ -22,22 +22,32 @@ type AuthMachineLogFilters struct {
 
 	SuccessfulLogin bool
 	LoggedInUserID  bool
+	Fingerprint     bool
 
-	Fingerprint bool
-}
+	// The following fields are likely to log credentials and other sensitive
+	// stuff when enabled. ONLY FOR USE DURING DEVELOPMENT.
 
-var VerboseAuthMachineLogFilters = AuthMachineLogFilters{
-	EveryHTTPRequest:  true,
-	EveryHTTPResponse: true,
-	SuccessfulLogin:   true,
-	LoggedInUserID:    true,
-	Fingerprint:       true,
+	DangerouslyLeakyHTTPHeaders bool
 }
 
 var DefaultAuthMachineLogFilters = AuthMachineLogFilters{
 	EveryHTTPRequest:  true,
 	EveryHTTPResponse: true,
-	SuccessfulLogin:   true,
-	LoggedInUserID:    false,
-	Fingerprint:       false,
+
+	SuccessfulLogin: true,
+	LoggedInUserID:  false,
+	Fingerprint:     false,
+
+	DangerouslyLeakyHTTPHeaders: false,
+}
+
+var LeakyDevelopmentAuthMachineLogFilters = AuthMachineLogFilters{
+	EveryHTTPRequest:  true,
+	EveryHTTPResponse: true,
+
+	SuccessfulLogin: true,
+	LoggedInUserID:  true,
+	Fingerprint:     true,
+
+	DangerouslyLeakyHTTPHeaders: true,
 }

@@ -24,6 +24,8 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"slices"
+	"strings"
 
 	"github.com/rs/zerolog"
 	"go.mau.fi/util/ptr"
@@ -79,6 +81,27 @@ func NewAuthMachine(ctx context.Context, http HTTP, personality *Personality) *A
 	}
 }
 
+func formatHTTPHeaderDump(prefix string, headers http.Header) string {
+	keys := make([]string, 0, len(headers))
+	for key := range headers {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+
+	var msg strings.Builder
+	msg.WriteString(prefix)
+	for _, key := range keys {
+		for _, value := range headers[key] {
+			msg.WriteByte('\n')
+			msg.WriteString(key)
+			msg.WriteString(": ")
+			msg.WriteString(value)
+		}
+	}
+
+	return msg.String()
+}
+
 func (am *AuthMachine) captchaRetryLoop(ctx context.Context, req *http.Request) (*http.Response, []byte, error) {
 	// Check if we can clone the request body. We need this since we might need
 	// to retry the request.
@@ -118,11 +141,21 @@ func (am *AuthMachine) captchaRetryLoop(ctx context.Context, req *http.Request) 
 				Int("n_captchas", nCaptchas).
 				Msg("Making request")
 		}
+		if am.LogFilters.DangerouslyLeakyHTTPHeaders {
+			log.Debug().
+				Int("n_captchas", nCaptchas).
+				Msg(formatHTTPHeaderDump("Sending request headers", req.Header))
+		}
 
 		// Make the HTTP request.
 		resp, err = am.http.Do(req)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to make http request: %w", err)
+		}
+		if am.LogFilters.DangerouslyLeakyHTTPHeaders {
+			log.Debug().
+				Int("n_captchas", nCaptchas).
+				Msg(formatHTTPHeaderDump("Received response headers", resp.Header))
 		}
 
 		// We need to consume the entire response body so we can test for a
@@ -349,6 +382,7 @@ func (am *AuthMachine) Login(ctx context.Context, creds *Creds) (*LoginResponse,
 		return nil, fmt.Errorf("failed to unmarshal login response: %w", err)
 	}
 	if loginResponse.Token.IsZero() || loginResponse.UserID == "" {
+		// FIXME(skip): This will be hit for MFA flows such as TOTP.
 		log.Error().Str("response_body", string(body)).Msg("Received corrupted login response")
 		return nil, fmt.Errorf("corrupted login response")
 	}

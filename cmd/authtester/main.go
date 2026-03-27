@@ -99,7 +99,7 @@ func run() error {
 	machine := discordauth.NewAuthMachine(ctx, client, personality)
 	machine.APIBase = apiBase
 	if verbose {
-		machine.LogFilters = discordauth.VerboseAuthMachineLogFilters
+		machine.LogFilters = discordauth.LeakyDevelopmentAuthMachineLogFilters
 	} else {
 		machine.LogFilters = discordauth.DefaultAuthMachineLogFilters
 	}
