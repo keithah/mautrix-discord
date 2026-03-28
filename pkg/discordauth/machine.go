@@ -515,10 +515,13 @@ func (am *AuthMachine) tryHandlingMFA(ctx context.Context, loginRespBody []byte)
 	contReq.Header.Set("Content-Type", "application/json")
 
 	_, body, err := am.doHandlingCaptcha(ctx, contReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to complete MFA flow: %w", err)
+	}
 	var completed LoginCompleted
 	err = json.Unmarshal(body, &completed)
 	if err != nil {
-		return nil, fmt.Errorf("failed to complete MFA flow: %w", err)
+		return nil, fmt.Errorf("failed to unmarshal completed MFA: %w", err)
 	}
 
 	// Discord omits the user ID when completing the MFA flow as we already
