@@ -36,10 +36,16 @@ func NewCreds(emailOrPhone string, password string) *Creds {
 	}
 }
 
-type LoginResponse struct {
-	Token        Sensitive[string] `json:"token"`
-	UserID       string            `json:"user_id"`
-	UserSettings UserSettings      `json:"user_settings"`
+// A LoginCompleted is returned from Discord when a log in flow concludes.
+type LoginCompleted struct {
+	Token           Sensitive[string] `json:"token"`
+	UserID          string            `json:"user_id"`
+	UserSettings    UserSettings      `json:"user_settings"`
+	RequiredActions []string          `json:"required_actions"`
+}
+
+func (lc *LoginCompleted) HasToken() bool {
+	return !lc.Token.IsZero()
 }
 
 type UserSettings struct {

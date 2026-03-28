@@ -2,6 +2,7 @@ package discordauth
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -12,6 +13,16 @@ type testHTTPClient func(req *http.Request) (*http.Response, error)
 
 func (thc testHTTPClient) Do(req *http.Request) (*http.Response, error) {
 	return thc(req)
+}
+
+type testChallengeHandler struct{}
+
+func (testChallengeHandler) SolveCaptcha(context.Context, *Captcha) (*CaptchaSolution, error) {
+	return &CaptchaSolution{Solution: "test-captcha-solution"}, nil
+}
+
+func (testChallengeHandler) ContinueMFA(context.Context, *MFAChallenge) (*MFAContinue, error) {
+	return nil, errors.New("unexpected MFA continuation in test")
 }
 
 func newTestPersonality() *Personality {
@@ -49,7 +60,7 @@ func TestDoHandlingCaptchaAddsDebugOptionsHeader(t *testing.T) {
 		return newResponse(http.StatusOK, `{"ok":true}`), nil
 	})
 
-	am := NewAuthMachine(context.Background(), client, newTestPersonality())
+	am := NewAuthMachine(context.Background(), client, newTestPersonality(), testChallengeHandler{})
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.com/test", nil)
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)

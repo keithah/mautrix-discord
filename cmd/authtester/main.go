@@ -96,14 +96,13 @@ func run() error {
 		return fmt.Errorf("failed to create auth personality: %w", err)
 	}
 
-	machine := discordauth.NewAuthMachine(ctx, client, personality)
+	machine := discordauth.NewAuthMachine(ctx, client, personality, prompter)
 	machine.APIBase = apiBase
 	if verbose {
 		machine.LogFilters = discordauth.LeakyDevelopmentAuthMachineLogFilters
 	} else {
 		machine.LogFilters = discordauth.DefaultAuthMachineLogFilters
 	}
-	machine.CaptchaHandler = prompter.handleCaptcha
 
 	fmt.Fprintln(os.Stdout, "Preparing Discord auth...")
 	if err = machine.Prepare(ctx); err != nil {
@@ -266,6 +265,14 @@ type prompter struct {
 	captchaServer *captchaServer
 }
 
+var _ discordauth.ChallengeHandler = (*prompter)(nil)
+
+type mfaMethodOption struct {
+	Type       discordauth.AuthenticatorType
+	Label      string
+	CodePrompt string
+}
+
 func newPrompter(in io.Reader, out io.Writer, captchaServer *captchaServer) *prompter {
 	file, _ := in.(*os.File)
 
@@ -329,7 +336,114 @@ func (p *prompter) promptSecret(label string) (string, error) {
 	return strings.TrimRight(string(line), "\r\n"), nil
 }
 
-func (p *prompter) handleCaptcha(ctx context.Context, captcha *discordauth.Captcha) (*discordauth.CaptchaSolution, error) {
+func (p *prompter) promptMFAChoice(options []mfaMethodOption) (mfaMethodOption, error) {
+	fmt.Fprintln(p.out)
+	fmt.Fprintln(p.out, "Available MFA methods:")
+	for i, option := range options {
+		fmt.Fprintf(p.out, "  %d. %s\n", i+1, option.Label)
+	}
+
+	for {
+		choice, err := p.promptRequired("Choose MFA method")
+		if err != nil {
+			return mfaMethodOption{}, err
+		}
+
+		index, err := strconv.Atoi(choice)
+		if err == nil && index >= 1 && index <= len(options) {
+			return options[index-1], nil
+		}
+
+		fmt.Fprintf(p.out, "Invalid choice %q. Enter a number from 1 to %d.\n", choice, len(options))
+	}
+}
+
+func supportedMFAMethods(challenge *discordauth.MFAChallenge) []mfaMethodOption {
+	options := make([]mfaMethodOption, 0, 3)
+	if challenge.TOTPEnabled {
+		options = append(options, mfaMethodOption{
+			Type:       discordauth.AuthenticatorTOTP,
+			Label:      "TOTP authenticator",
+			CodePrompt: "TOTP code",
+		})
+	}
+	if challenge.SMSEnabled {
+		options = append(options, mfaMethodOption{
+			Type:       discordauth.AuthenticatorSMS,
+			Label:      "SMS code",
+			CodePrompt: "SMS code",
+		})
+	}
+	if challenge.BackupCodesAccepted {
+		options = append(options, mfaMethodOption{
+			Type:       discordauth.AuthenticatorBackup,
+			Label:      "Backup code",
+			CodePrompt: "Backup code",
+		})
+	}
+
+	return options
+}
+
+func newMFAContinue(challenge *discordauth.MFAChallenge, authType discordauth.AuthenticatorType, code string) *discordauth.MFAContinue {
+	return &discordauth.MFAContinue{
+		Type: authType,
+		MFAContinuation: discordauth.MFAContinuation{
+			MFAState: challenge.MFAState,
+			Code:     code,
+		},
+	}
+}
+
+func (p *prompter) ContinueMFA(ctx context.Context, challenge *discordauth.MFAChallenge) (*discordauth.MFAContinue, error) {
+	options := supportedMFAMethods(challenge)
+	if len(options) == 0 {
+		if challenge.WebAuthnCredential != nil {
+			panic("authtester does not support WebAuthn MFA")
+		}
+		return nil, fmt.Errorf("discord did not offer a supported MFA method")
+	}
+
+	selected := options[0]
+	if len(options) == 1 {
+		fmt.Fprintln(p.out)
+		fmt.Fprintf(p.out, "Using MFA method: %s\n", selected.Label)
+	} else {
+		var err error
+		selected, err = p.promptMFAChoice(options)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	switch selected.Type {
+	case discordauth.AuthenticatorSMS:
+		if challenge.RequestSMS == nil {
+			return nil, fmt.Errorf("discord MFA challenge did not provide an SMS request callback")
+		}
+
+		fmt.Fprintln(p.out)
+		fmt.Fprintln(p.out, "Requesting an MFA SMS code...")
+		resp, err := challenge.RequestSMS(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to request SMS code: %w", err)
+		}
+		if resp != nil && resp.Phone != "" {
+			fmt.Fprintf(p.out, "Discord sent an MFA SMS code to %s\n", resp.Phone)
+		} else {
+			fmt.Fprintln(p.out, "Discord sent an MFA SMS code.")
+		}
+	}
+
+	code, err := p.promptSecretRequired(selected.CodePrompt)
+	if err != nil {
+		return nil, err
+	}
+
+	return newMFAContinue(challenge, selected.Type, code), nil
+}
+
+func (p *prompter) SolveCaptcha(ctx context.Context, captcha *discordauth.Captcha) (*discordauth.CaptchaSolution, error) {
 	captchaData, err := json.MarshalIndent(captcha, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode captcha challenge: %w", err)

@@ -31,6 +31,9 @@ import (
 	"go.mau.fi/util/ptr"
 )
 
+// TODO(skip): Helper for constructing requests (optionally accepting a JSON
+// body).
+
 // An AuthMachine governs the core logic to authenticate with Discord. It is
 // concerned with:
 //
@@ -42,9 +45,9 @@ type AuthMachine struct {
 	log        *zerolog.Logger
 	LogFilters AuthMachineLogFilters
 
-	http           HTTP
-	APIBase        string
-	CaptchaHandler CaptchaHandler
+	http    HTTP
+	APIBase string
+	handler ChallengeHandler
 
 	State AuthMachineState
 
@@ -60,19 +63,24 @@ type CaptchaSolution struct {
 }
 type CaptchaHandler func(ctx context.Context, captcha *Captcha) (*CaptchaSolution, error)
 
-func NewAuthMachine(ctx context.Context, http HTTP, personality *Personality) *AuthMachine {
+func NewAuthMachine(ctx context.Context, http HTTP, personality *Personality, handler ChallengeHandler) *AuthMachine {
 	if http == nil {
 		panic("http interface is required")
 	}
 	if personality == nil {
 		panic("personality is required")
 	}
+	if handler == nil {
+		panic("handler is required")
+	}
 
 	log := zerolog.Ctx(ctx).With().Str("component", "discord auth").Logger()
 
 	return &AuthMachine{
-		log:  &log,
-		http: http,
+		log: &log,
+
+		http:    http,
+		handler: handler,
 
 		APIBase:     "https://discord.com/api/v9",
 		Personality: personality,
@@ -217,14 +225,8 @@ func (am *AuthMachine) waitForCaptchaSolve(ctx context.Context, captcha *Captcha
 	log := zerolog.Ctx(ctx).With().Str("action", "wait for discord captcha solve").Logger()
 	ctx = log.WithContext(ctx)
 
-	handler := am.CaptchaHandler
-	if handler == nil {
-		// TODO(skip): Just make it required?
-		return nil, fmt.Errorf("received a CAPTCHA but don't have a handler")
-	}
-
 	log.Info().Msg("Invoking CAPTCHA handler")
-	solution, err := handler(ctx, captcha)
+	solution, err := am.handler.SolveCaptcha(ctx, captcha)
 	if err != nil {
 		return nil, fmt.Errorf("captcha handler failed: %w", err)
 	}
@@ -320,7 +322,10 @@ func (am *AuthMachine) performApexExperiments(ctx context.Context) (any, error) 
 }
 
 // Prepare loads the login page and situates the AuthMachine with an
-// experiments-related [Fingerprint].
+// experiments-related [Fingerprint]. It is important for Prepare to be called
+// before [AuthMachine.Login].
+//
+// Calling this method can lead to your [ChallengeHandler] being called.
 func (am *AuthMachine) Prepare(ctx context.Context) error {
 	log := am.log.With().Str("action", "prepare discord auth machine").Logger()
 	ctx = log.WithContext(ctx)
@@ -348,12 +353,15 @@ func (am *AuthMachine) Prepare(ctx context.Context) error {
 
 // FIXME(skip): Load the HTML /login page before anything else so we can seed our cookies with Cloudflare stuff.
 // FIXME(skip): Handle IP verification.
-// FIXME(skip): Handle MFA (TOTP).
-// FIXME(skip): Handle MFA (TOTP backup).
-// FIXME(skip): Handle MFA (SMS).
 // FIXME(skip): Handle suspended user tokens.
 
-func (am *AuthMachine) Login(ctx context.Context, creds *Creds) (*LoginResponse, error) {
+// Once you have called [AuthMachine.Prepare], Login kicks off the login
+// process and doesn't return until the login is complete and a token is
+// acquired, unless an error occurs at any point.
+//
+// CAPTCHA and MFA handling is automatically relegated to your
+// [ChallengeHandler] and its methods will be called as necessary.
+func (am *AuthMachine) Login(ctx context.Context, creds *Creds) (*LoginCompleted, error) {
 	log := zerolog.Ctx(ctx)
 
 	if am.State.Fingerprint.IsZero() {
@@ -366,26 +374,20 @@ func (am *AuthMachine) Login(ctx context.Context, creds *Creds) (*LoginResponse,
 	}
 
 	url := fmt.Sprintf("%s/auth/login", am.APIBase)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(credsBody))
+	firstLoginReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(credsBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to construct login request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	firstLoginReq.Header.Set("Content-Type", "application/json")
 
-	_, body, err := am.doHandlingCaptcha(ctx, req)
+	_, body, err := am.doHandlingCaptcha(ctx, firstLoginReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to request login: %w", err)
 	}
 
-	var loginResponse LoginResponse
-	err = json.Unmarshal(body, &loginResponse)
+	loginResponse, err := am.handleFirstLoginResponse(ctx, body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal login response: %w", err)
-	}
-	if loginResponse.Token.IsZero() || loginResponse.UserID == "" {
-		// FIXME(skip): This will be hit for MFA flows such as TOTP.
-		log.Error().Str("response_body", string(body)).Msg("Received corrupted login response")
-		return nil, fmt.Errorf("corrupted login response")
+		return nil, err
 	}
 
 	if am.LogFilters.SuccessfulLogin {
@@ -396,5 +398,135 @@ func (am *AuthMachine) Login(ctx context.Context, creds *Creds) (*LoginResponse,
 		ev.Msg("Logged in successfully")
 	}
 
-	return &loginResponse, nil
+	return loginResponse, nil
+}
+
+// handleFirstLoginResponse handles the response body from POSTing to
+// /auth/login. This will either complete the login or begin an MFA flow.
+func (am *AuthMachine) handleFirstLoginResponse(ctx context.Context, loginRespBody []byte) (*LoginCompleted, error) {
+	log := zerolog.Ctx(ctx)
+
+	var completed LoginCompleted
+	err := json.Unmarshal(loginRespBody, &completed)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal login response: %w", err)
+	}
+	if !completed.HasToken() {
+		log.Debug().Msg("Response lacked a token, attempting to handle as MFA")
+		completedMfa, err := am.tryHandlingMFA(ctx, loginRespBody)
+		if err != nil {
+			return nil, fmt.Errorf("failed to handle potential MFA: %w", err)
+		}
+
+		if completedMfa == nil || !completedMfa.HasToken() {
+			// Still unable to handle whatever we got as a response from POST
+			// /auth/login, give up. Log the response for diagnostics.
+			log.Error().Str("response_body", string(loginRespBody)).Msg("Received corrupted login response")
+			return nil, fmt.Errorf("corrupted login response")
+		}
+		return completedMfa, nil
+	}
+
+	return &completed, nil
+}
+
+func (am *AuthMachine) requestSMSCode(ctx context.Context, state *MFAState) (*SMSSendResponse, error) {
+	sendSmsBody, err := json.Marshal(SMSSendRequest{
+		Ticket: state.Ticket,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal sms send request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/auth/mfa/sms/send", am.APIBase)
+	smsSendReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(sendSmsBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to construct SMS send code request: %w", err)
+	}
+	smsSendReq.Header.Set("Content-Type", "application/json")
+
+	_, body, err := am.doHandlingCaptcha(ctx, smsSendReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to request SMS code: %w", err)
+	}
+
+	var resp SMSSendResponse
+	err = json.Unmarshal(body, &resp)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal SMS code response: %w", err)
+	}
+
+	return &resp, nil
+}
+
+func (am *AuthMachine) tryHandlingMFA(ctx context.Context, loginRespBody []byte) (*LoginCompleted, error) {
+	baseLog := zerolog.Ctx(ctx)
+
+	var required LoginMFARequired
+	err := json.Unmarshal(loginRespBody, &required)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal mfa required: %w", err)
+	}
+
+	if !required.MFARequired {
+		// This isn't actually a LoginMFARequired.
+		return nil, nil
+	}
+
+	logCtx := baseLog.With().
+		Str("mfa_login_instance_id", required.LoginInstanceID).
+		Bool("mfa_accepting_backup_codes", required.BackupCodesAccepted).
+		Bool("mfa_sms_enabled", required.SMSEnabled).
+		Bool("mfa_totp_enabled", required.TOTPEnabled).
+		Bool("mfa_has_webauthn_credential", required.WebAuthnCredential != nil)
+	if am.LogFilters.LoggedInUserID {
+		logCtx = logCtx.Str("user_id", required.UserID)
+	}
+	log := logCtx.Logger()
+	ctx = log.WithContext(ctx)
+
+	log.Info().Msg("Need to log in with MFA")
+	cont, err := am.handler.ContinueMFA(ctx, &MFAChallenge{
+		LoginMFARequired: &required,
+		RequestSMS: func(ctx context.Context) (*SMSSendResponse, error) {
+			// Thread the MFAState through on behalf of the client.
+			return am.requestSMSCode(ctx, &required.MFAState)
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to continue mfa flow: %w", err)
+	}
+	if cont == nil {
+		return nil, fmt.Errorf("no MFA continuation returned")
+	}
+
+	log.Info().Str("mfa_type", string(cont.Type)).Msg("Continuing with MFA flow")
+
+	contBody, err := json.Marshal(cont.MFAContinuation)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal MFA continuation: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/auth/mfa/%s", am.APIBase, cont.Type)
+	contReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(contBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to construct MFA continuation request: %w", err)
+	}
+	contReq.Header.Set("Content-Type", "application/json")
+
+	_, body, err := am.doHandlingCaptcha(ctx, contReq)
+	var completed LoginCompleted
+	err = json.Unmarshal(body, &completed)
+	if err != nil {
+		return nil, fmt.Errorf("failed to complete MFA flow: %w", err)
+	}
+
+	// Discord omits the user ID when completing the MFA flow as we already
+	// received it as part of LoginMFARequired. Re-add it here.
+	if completed.UserID == "" {
+		log.Trace().Msg("Fixing up MFA completion with the user ID")
+		completed.UserID = required.UserID
+	}
+
+	return &completed, nil
 }
