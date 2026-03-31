@@ -937,7 +937,7 @@ func (d *DiscordClient) baseAnalyticsProps(ctx context.Context) map[string]any {
 		props["lastInMemorySendAttemptAgeMs"] = time.Since(attempt.At).Milliseconds()
 		props["lastInMemorySendAttemptChannelType"] = readableChannelType(attempt.ChannelType)
 		if relType := attempt.RecipientRelationshipType; relType != nil {
-			props["lastInMemorySendAttemptRecipientRelationshipType"] = attempt.RecipientRelationshipType
+			props["lastInMemorySendAttemptRecipientRelationshipType"] = readableRelationshipType(*relType)
 		}
 	}
 	d.lastSendAttemptMutex.Unlock()
