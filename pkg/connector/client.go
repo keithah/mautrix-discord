@@ -69,6 +69,9 @@ type DiscordClient struct {
 	readStates     map[string]*discordgo.ReadState
 	readStatesLock sync.RWMutex
 
+	relationshipLock sync.RWMutex
+	relationships    map[string]*discordgo.Relationship
+
 	userCache *UserCache
 
 	lastSendAttemptMutex sync.Mutex
@@ -98,6 +101,7 @@ func (d *DiscordConnector) LoadUserLogin(ctx context.Context, login *bridgev2.Us
 		userCache:     NewUserCache(session),
 		guildSettings: make(map[string]*discordgo.UserGuildSettings),
 		readStates:    make(map[string]*discordgo.ReadState),
+		relationships: make(map[string]*discordgo.Relationship),
 	}
 	login.Client = &cl
 
@@ -229,6 +233,9 @@ func (cl *DiscordClient) connectRetrying(ctx context.Context, retryCount int) {
 }
 
 func (cl *DiscordClient) handleDiscordEventSync(event any) {
+	// Dispatch event handlers that maintain important state synchronously, or
+	// else we might end up relying on goroutine scheduling.
+	cl.handleDiscordStateEvent(event)
 	go cl.handleDiscordEvent(event)
 }
 
@@ -978,16 +985,11 @@ func (d *DiscordClient) relationshipWithUserID(userID string) *discordgo.Relatio
 	if d.Session == nil || d.Session.State == nil {
 		return nil
 	}
-	relationships := d.Session.State.Relationships
 
-	// TODO(skip): Having to do a linear search every time sucks.
-	for _, relationship := range relationships {
-		if relationship.ID == userID {
-			return relationship
-		}
-	}
+	d.relationshipLock.RLock()
+	defer d.relationshipLock.RUnlock()
 
-	return nil
+	return d.relationships[userID]
 }
 
 func (d *DiscordClient) relationshipWithDMRecipient(ch *discordgo.Channel) *discordgo.Relationship {
@@ -1002,4 +1004,40 @@ func (d *DiscordClient) relationshipWithDMRecipient(ch *discordgo.Channel) *disc
 
 	rel := d.relationshipWithUserID(*recip)
 	return rel
+}
+
+func (d *DiscordClient) rebuildRelationships() {
+	if d.Session == nil || d.Session.State == nil {
+		return
+	}
+
+	d.relationshipLock.Lock()
+	defer d.relationshipLock.Unlock()
+
+	clear(d.relationships)
+
+	for _, rel := range d.Session.State.Relationships {
+		if rel == nil {
+			continue
+		}
+		d.relationships[rel.ID] = rel
+	}
+}
+
+func (d *DiscordClient) upsertRelationship(rel *discordgo.Relationship) {
+	if rel == nil {
+		return
+	}
+
+	d.relationshipLock.Lock()
+	defer d.relationshipLock.Unlock()
+
+	d.relationships[rel.ID] = rel
+}
+
+func (d *DiscordClient) removeRelationship(userID string) {
+	d.relationshipLock.Lock()
+	defer d.relationshipLock.Unlock()
+
+	delete(d.relationships, userID)
 }

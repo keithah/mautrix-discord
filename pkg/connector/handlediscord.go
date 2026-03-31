@@ -574,6 +574,19 @@ func messageCtx(ctx context.Context, msg *discordgo.Message) (context.Context, *
 	return log.WithContext(ctx), &log
 }
 
+func (d *DiscordClient) handleDiscordStateEvent(rawEvt any) {
+	switch evt := rawEvt.(type) {
+	case *discordgo.Ready:
+		d.rebuildRelationships()
+	case *discordgo.RelationshipAdd:
+		d.upsertRelationship(evt.Relationship)
+	case *discordgo.RelationshipUpdate:
+		d.upsertRelationship(evt.Relationship)
+	case *discordgo.RelationshipRemove:
+		d.removeRelationship(evt.ID)
+	}
+}
+
 func (d *DiscordClient) handleDiscordEvent(rawEvt any) {
 	defer func() {
 		err := recover()
