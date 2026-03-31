@@ -19,6 +19,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"maps"
 	"math"
 	"strings"
 	"time"
@@ -113,6 +114,19 @@ func (d *DiscordClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.M
 
 	// (This fires a goroutine internally so it won't block.)
 	if ch != nil {
+		if channelIsPrivate(ch) {
+			// NOTE: These analytics are so that we can get some data on what's
+			// causing Discord to disable/restrict/ban accounts. For message
+			// attempts, we only send these for DMs at the moment.
+			d.sendOutgoingMessageAttemptAnalytics(ctx, map[string]any{
+				"messageFlags":   sendReq.Flags,
+				"messageType":    sendReq.Type,
+				"hasAttachments": len(sendReq.Attachments) > 0,
+				"hasEmbeds":      len(sendReq.Embeds) > 0,
+				"isReplying":     sendReq.Reference != nil && sendReq.Reference.Type == discordgo.MessageReferenceTypeDefault,
+			})
+		}
+
 		var relType *discordgo.RelationshipType
 		if rel := d.relationshipWithDMRecipient(ch); rel != nil {
 			relType = &rel.Type
@@ -144,6 +158,13 @@ func (d *DiscordClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.M
 	return &bridgev2.MatrixMessageResponse{
 		DB: dbMessage,
 	}, nil
+}
+
+func (d *DiscordClient) sendOutgoingMessageAttemptAnalytics(ctx context.Context, extra map[string]any) {
+	props := d.baseAnalyticsProps(ctx)
+	maps.Copy(props, extra)
+
+	d.UserLogin.TrackAnalytics("Discord outgoing message attempt", props)
 }
 
 func (d *DiscordClient) HandleMatrixEdit(ctx context.Context, msg *bridgev2.MatrixEdit) error {
