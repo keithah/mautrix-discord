@@ -30,6 +30,23 @@ import (
 	"go.mau.fi/mautrix-discord/pkg/discordid"
 )
 
+func readableRelationshipType(rel discordgo.RelationshipType) (desc string) {
+	desc = "unknown"
+
+	switch rel {
+	case discordgo.RelationshipBlocked:
+		desc = "blocked"
+	case discordgo.RelationshipFriend:
+		desc = "friend"
+	case discordgo.RelationshipIncomingFriendRequest:
+		desc = "recipient wants to be friends"
+	case discordgo.RelationshipOutgoingFriendRequest:
+		desc = "sender wants to be friends"
+	}
+
+	return
+}
+
 // makeRemoteName computes an appropriate value for the RemoteName field on
 // [bridgev2.UserLogin].
 func makeRemoteName(u *discordgo.User) string {

@@ -58,6 +58,25 @@ func channelIsPrivate(ch *discordgo.Channel) bool {
 	return ch.Type == discordgo.ChannelTypeDM || ch.Type == discordgo.ChannelTypeGroupDM
 }
 
+func readableChannelType(typ discordgo.ChannelType) (desc string) {
+	desc = "other"
+
+	switch typ {
+	case discordgo.ChannelTypeGuildText:
+		desc = "guild text"
+	case discordgo.ChannelTypeDM:
+		desc = "dm"
+	case discordgo.ChannelTypeGroupDM:
+		desc = "group dm"
+	case discordgo.ChannelTypeGuildPublicThread:
+		desc = "public thread"
+	case discordgo.ChannelTypeGuildPrivateThread:
+		desc = "private thread"
+	}
+
+	return
+}
+
 func (d *DiscordClient) makeAvatarForChannel(ctx context.Context, ch *discordgo.Channel) *bridgev2.Avatar {
 	if channelIsPrivate(ch) {
 		return &bridgev2.Avatar{

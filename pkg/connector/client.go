@@ -24,6 +24,7 @@ import (
 	"iter"
 	"maps"
 	"net/http"
+	"regexp"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -40,6 +41,7 @@ import (
 
 	"go.mau.fi/util/exmaps"
 
+	"go.mau.fi/mautrix-discord/pkg/discordauth"
 	"go.mau.fi/mautrix-discord/pkg/discordid"
 )
 
@@ -68,6 +70,9 @@ type DiscordClient struct {
 	readStatesLock sync.RWMutex
 
 	userCache *UserCache
+
+	lastSendAttemptMutex sync.Mutex
+	lastSendAttempt      *SendAttempt
 }
 
 func (d *DiscordConnector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLogin) error {
@@ -95,6 +100,10 @@ func (d *DiscordConnector) LoadUserLogin(ctx context.Context, login *bridgev2.Us
 		readStates:    make(map[string]*discordgo.ReadState),
 	}
 	login.Client = &cl
+
+	if session != nil {
+		session.RESTResponseHook = cl.tapDiscordRESTResponse
+	}
 
 	return nil
 }
@@ -860,5 +869,122 @@ func (d *DiscordClient) tryWrappingError(ctx context.Context, err error) error {
 	}
 
 	return err
+}
 
+var snowflakeish = regexp.MustCompile(`\d{17,}`)
+
+func redactDiscordRESTPath(path string) string {
+	return snowflakeish.ReplaceAllLiteralString(path, "...")
+}
+
+func dmChannelRecipientID(ch *discordgo.Channel) *string {
+	if ch == nil {
+		return nil
+	}
+	if ch.Type != discordgo.ChannelTypeDM {
+		return nil
+	}
+	if len(ch.RecipientIDs) != 1 {
+		// shouldn't happen?
+		return nil
+	}
+
+	return &ch.RecipientIDs[0]
+}
+
+func (d *DiscordClient) baseAnalyticsProps(ctx context.Context) map[string]any {
+	props := make(map[string]any)
+	if ctx == nil {
+		return props
+	}
+
+	ch, ok := ctx.Value(contextKeyChannel).(*discordgo.Channel)
+	if ok && ch != nil {
+		risky := false
+		props["channelType"] = readableChannelType(ch.Type)
+
+		if recipientID := dmChannelRecipientID(ch); recipientID != nil {
+			relationshipDesc := "none"
+			if rel := d.relationshipWithUserID(*recipientID); rel != nil {
+				relationshipDesc = readableRelationshipType(rel.Type)
+			} else if ch.Type == discordgo.ChannelTypeDM {
+				// No relationship with the recipient and it's a 1:1 DM.
+				risky = true
+			}
+
+			props["relationshipWithRecipient"] = relationshipDesc
+			props["risky"] = risky
+		}
+	}
+
+	d.lastSendAttemptMutex.Lock()
+	if attempt := d.lastSendAttempt; attempt != nil {
+		props["lastInMemorySendAttemptAgeMs"] = time.Since(attempt.At).Milliseconds()
+		props["lastInMemorySendAttemptChannelType"] = readableChannelType(attempt.ChannelType)
+		if relType := attempt.RecipientRelationshipType; relType != nil {
+			props["lastInMemorySendAttemptRecipientRelationshipType"] = attempt.RecipientRelationshipType
+		}
+	}
+	d.lastSendAttemptMutex.Unlock()
+
+	return props
+}
+
+func (d *DiscordClient) tapDiscordRESTResponse(req *http.Request, resp *http.Response, body []byte) {
+	// NOTE: discordgo calls this in a blocking fashion after reading the HTTP
+	// response from Discord, so don't block here.
+	ctx := context.Background()
+
+	if d.Session != nil && !d.Session.IsUser {
+		return
+	}
+
+	captcha := discordauth.TryUnmarshalingCaptcha(ctx, resp, body)
+	if captcha == nil {
+		return
+	}
+
+	redactedEndpoint := redactDiscordRESTPath(req.URL.Path)
+	props := d.baseAnalyticsProps(req.Context())
+	maps.Copy(props, map[string]any{
+		"apiEndpoint":      redactedEndpoint,
+		"httpMethod":       req.Method,
+		"captchaService":   string(captcha.Service),
+		"captchaInvisible": captcha.Invisible,
+		"captchaUserFlow":  captcha.UserFlow,
+	})
+
+	// (This fires a goroutine under the hood so it's alright to call this from
+	// here.)
+	d.UserLogin.TrackAnalytics("Discord CAPTCHA challenge", props)
+}
+
+func (d *DiscordClient) relationshipWithUserID(userID string) *discordgo.Relationship {
+	if d.Session == nil || d.Session.State == nil {
+		return nil
+	}
+	relationships := d.Session.State.Relationships
+
+	// TODO(skip): Having to do a linear search every time sucks.
+	for _, relationship := range relationships {
+		if relationship.ID == userID {
+			return relationship
+		}
+	}
+
+	return nil
+}
+
+func (d *DiscordClient) relationshipWithDMRecipient(ch *discordgo.Channel) *discordgo.Relationship {
+	if ch == nil {
+		return nil
+	}
+
+	recip := dmChannelRecipientID(ch)
+	if recip == nil {
+		return nil
+	}
+
+	rel := d.relationshipWithUserID(*recip)
+	return rel
 }

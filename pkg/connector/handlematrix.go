@@ -44,6 +44,18 @@ var (
 	_ bridgev2.MuteHandlingNetworkAPI        = (*DiscordClient)(nil)
 )
 
+type contextKey int
+
+const (
+	contextKeyChannel contextKey = iota
+)
+
+type SendAttempt struct {
+	At                        time.Time
+	ChannelType               discordgo.ChannelType
+	RecipientRelationshipType *discordgo.RelationshipType
+}
+
 func (d *DiscordClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, error) {
 	if !d.IsLoggedIn() {
 		return nil, bridgev2.ErrNotLoggedIn
@@ -96,7 +108,26 @@ func (d *DiscordClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.M
 		sendReq.Reference.ChannelID = threadChannelID
 	}
 
-	sentMsg, err := d.Session.ChannelMessageSendComplex(channelID, sendReq, refererOpt)
+	ch := d.channelWithID(ctx, channelID)
+	ctx = context.WithValue(ctx, contextKeyChannel, ch)
+
+	// (This fires a goroutine internally so it won't block.)
+	if ch != nil {
+		var relType *discordgo.RelationshipType
+		if rel := d.relationshipWithDMRecipient(ch); rel != nil {
+			relType = &rel.Type
+		}
+
+		d.lastSendAttemptMutex.Lock()
+		d.lastSendAttempt = &SendAttempt{
+			At:                        time.Now(),
+			ChannelType:               ch.Type,
+			RecipientRelationshipType: relType,
+		}
+		d.lastSendAttemptMutex.Unlock()
+	}
+
+	sentMsg, err := d.Session.ChannelMessageSendComplex(channelID, sendReq, refererOpt, discordgo.WithContext(ctx))
 	if err != nil {
 		return nil, d.tryWrappingError(ctx, err)
 	}
