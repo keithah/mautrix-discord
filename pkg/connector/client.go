@@ -839,7 +839,12 @@ func (d *DiscordClient) syncRemoteProfile(ctx context.Context) bool {
 }
 
 func (d *DiscordClient) wrapReceived40002(ctx context.Context, err error) error {
-	zerolog.Ctx(ctx).Err(err).Msg("Received 40002 from Discord")
+	log := zerolog.Ctx(ctx)
+	log.Err(err).Msg("Received 40002 from Discord")
+
+	props := d.baseAnalyticsProps(ctx)
+	props["errorMessage"] = err.Error()
+	d.UserLogin.TrackAnalytics("Discord account verification required", props)
 
 	d.UserLogin.BridgeState.Send(status.BridgeState{
 		StateEvent: status.StateBadCredentials,
