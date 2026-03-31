@@ -148,20 +148,28 @@ func (d *DiscordClient) Connect(ctx context.Context) {
 
 const maxGatewayConnectRetries = 5
 
-func (cl *DiscordClient) invalidateUserLogin(ctx context.Context) {
-	meta := cl.UserLogin.Metadata.(*discordid.UserLoginMetadata)
-	meta.Token = ""
-	if err := cl.UserLogin.Save(ctx); err != nil {
-		zerolog.Ctx(ctx).Err(err).Msg("Failed to save user login in order to invalidate session")
-	}
-}
+// tokenInvalidated responds to Discord invalidating our token.
+func (cl *DiscordClient) tokenInvalidated(ctx context.Context, circumstance string) {
+	log := zerolog.Ctx(ctx)
+	log.Info().Msg("Invalidating user login")
 
-func (cl *DiscordClient) sendInvalidAuthBridgeState() {
 	cl.UserLogin.BridgeState.Send(status.BridgeState{
 		StateEvent: status.StateBadCredentials,
 		Error:      DCWebsocketDisconnect4004,
 		UserAction: status.UserActionRelogin,
 	})
+
+	props := cl.baseAnalyticsProps(ctx)
+	props["circumstance"] = circumstance
+	cl.UserLogin.TrackAnalytics("Discord auth invalidation", props)
+
+	// Empty out the token.
+	log.Debug().Msg("Emptying token")
+	meta := cl.UserLogin.Metadata.(*discordid.UserLoginMetadata)
+	meta.Token = ""
+	if err := cl.UserLogin.Save(ctx); err != nil {
+		log.Err(err).Msg("Failed to save user login in order to invalidate session")
+	}
 }
 
 func (cl *DiscordClient) connectRetrying(ctx context.Context, retryCount int) {
@@ -185,9 +193,11 @@ func (cl *DiscordClient) connectRetrying(ctx context.Context, retryCount int) {
 		closeErr := &websocket.CloseError{}
 		if errors.As(err, &closeErr) && closeErr.Code == 4004 {
 			// Effectively the same as *discordgo.InvalidAuth, but at connect
-			// time. Do not retry.
-			cl.sendInvalidAuthBridgeState()
-			cl.invalidateUserLogin(ctx)
+			// time. (discordgo only dispatches the synthetic InvalidAuth event
+			// once you've already connected successfully.)
+			//
+			// Don't retry.
+			cl.tokenInvalidated(ctx, "when connecting")
 		} else if retryCount <= maxGatewayConnectRetries {
 			cl.UserLogin.BridgeState.Send(status.BridgeState{
 				StateEvent: status.StateTransientDisconnect,

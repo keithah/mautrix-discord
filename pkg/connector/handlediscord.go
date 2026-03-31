@@ -624,8 +624,7 @@ func (d *DiscordClient) handleDiscordEvent(rawEvt any) {
 		})
 	case *discordgo.InvalidAuth:
 		log.Warn().Msg("Got logged out of Discord due to invalid token")
-		d.sendInvalidAuthBridgeState()
-		d.invalidateUserLogin(ctx)
+		d.tokenInvalidated(ctx, "while connected")
 	case *discordgo.TypingStart:
 		bridged, route := d.channelIsBridged(ctx, evt.ChannelID)
 		if !bridged {
