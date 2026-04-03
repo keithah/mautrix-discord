@@ -33,11 +33,11 @@ var DiscordGeneralCaps = &bridgev2.NetworkGeneralCapabilities{
 	},
 }
 
-func (dc *DiscordConnector) GetCapabilities() *bridgev2.NetworkGeneralCapabilities {
+func (d *DiscordConnector) GetCapabilities() *bridgev2.NetworkGeneralCapabilities {
 	return DiscordGeneralCaps
 }
 
-func (wa *DiscordConnector) GetBridgeInfoVersion() (info, caps int) {
+func (d *DiscordConnector) GetBridgeInfoVersion() (info, caps int) {
 	return 1, 4
 }
 
@@ -156,7 +156,7 @@ var discordCaps = &event.RoomFeatures{
 	Thread:          event.CapLevelPartialSupport,
 }
 
-func (dc *DiscordClient) GetCapabilities(ctx context.Context, portal *bridgev2.Portal) *event.RoomFeatures {
+func (d *DiscordClient) GetCapabilities(ctx context.Context, portal *bridgev2.Portal) *event.RoomFeatures {
 	if portal.Metadata.(*discordid.PortalMetadata).GuildID == "" {
 		caps := discordCaps.Clone()
 		caps.Thread = event.CapLevelUnsupported

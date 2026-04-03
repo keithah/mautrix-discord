@@ -35,8 +35,8 @@ var (
 	_ bridgev2.BackfillingNetworkAPIWithLimits = (*DiscordClient)(nil)
 )
 
-func (dc *DiscordClient) FetchMessages(ctx context.Context, fetchParams bridgev2.FetchMessagesParams) (*bridgev2.FetchMessagesResponse, error) {
-	if !dc.IsLoggedIn() {
+func (d *DiscordClient) FetchMessages(ctx context.Context, fetchParams bridgev2.FetchMessagesParams) (*bridgev2.FetchMessagesResponse, error) {
+	if !d.IsLoggedIn() {
 		return nil, bridgev2.ErrNotLoggedIn
 	}
 
@@ -46,7 +46,7 @@ func (dc *DiscordClient) FetchMessages(ctx context.Context, fetchParams bridgev2
 	var knownThreadRootID *networkid.MessageID
 
 	if fetchParams.ThreadRoot != "" {
-		thread, err := dc.getThreadByRootMessageID(ctx, discordid.ParseMessageID(fetchParams.ThreadRoot))
+		thread, err := d.getThreadByRootMessageID(ctx, discordid.ParseMessageID(fetchParams.ThreadRoot))
 		if err != nil {
 			return nil, err
 		}
@@ -89,15 +89,15 @@ func (dc *DiscordClient) FetchMessages(ctx context.Context, fetchParams bridgev2
 	// ChannelMessages returns messages ordered from newest to oldest.
 	count := min(fetchParams.Count, 100)
 	log.Debug().Msg("Fetching channel history for backfill")
-	msgs, err := dc.Session.ChannelMessages(channelID, count, beforeID, afterID, "", refererOpt)
+	msgs, err := d.Session.ChannelMessages(channelID, count, beforeID, afterID, "", refererOpt)
 	if err != nil {
-		return nil, dc.tryWrappingError(ctx, err)
+		return nil, d.tryWrappingError(ctx, err)
 	}
 
 	// Update our user cache with all of the users present in the response. This
 	// indirectly makes `GetUserInfo` on `DiscordClient` return the information
 	// we've fetched above.
-	cachedDiscordUserIDs := dc.userCache.UpdateWithMessages(msgs)
+	cachedDiscordUserIDs := d.userCache.UpdateWithMessages(msgs)
 
 	{
 		log := zerolog.Ctx(ctx).With().
@@ -110,13 +110,13 @@ func (dc *DiscordClient) FetchMessages(ctx context.Context, fetchParams bridgev2
 		// that we've never seen until now.
 		for _, discordUserID := range cachedDiscordUserIDs {
 
-			ghost, err := dc.connector.Bridge.GetGhostByID(ctx, discordid.MakeUserID(discordUserID))
+			ghost, err := d.connector.Bridge.GetGhostByID(ctx, discordid.MakeUserID(discordUserID))
 			if err != nil {
 				log.Err(err).Str("ghost_id", discordUserID).
 					Msg("Failed to get ghost associated with message")
 				continue
 			}
-			ghost.UpdateInfoIfNecessary(ctx, dc.UserLogin, bridgev2.RemoteEventMessage)
+			ghost.UpdateInfoIfNecessary(ctx, d.UserLogin, bridgev2.RemoteEventMessage)
 		}
 	}
 
@@ -126,7 +126,7 @@ func (dc *DiscordClient) FetchMessages(ctx context.Context, fetchParams bridgev2
 		parsedMsgID, _ := strconv.ParseInt(msg.ID, 10, 64)
 		msgTs, _ := discordgo.SnowflakeTimestamp(msg.ID)
 
-		readState := dc.readStateForID(msg.ChannelID)
+		readState := d.readStateForID(msg.ChannelID)
 		if readState != nil {
 			lastAckedMsgID, _ := strconv.ParseInt(string(readState.LastMessageID), 10, 64)
 			if lastAckedMsgID >= parsedMsgID {
@@ -150,10 +150,10 @@ func (dc *DiscordClient) FetchMessages(ctx context.Context, fetchParams bridgev2
 		//
 		// It might be worth fetching the reaction data anyways if we observe
 		// a small overall number of reactions.
-		sender := dc.makeEventSender(msg.Author)
+		sender := d.makeEventSender(msg.Author)
 
 		// Use the ghost's intent, falling back to the bridge's.
-		ghost, err := dc.connector.Bridge.GetGhostByID(ctx, sender.Sender)
+		ghost, err := d.connector.Bridge.GetGhostByID(ctx, sender.Sender)
 		if err != nil {
 			log.Err(err).Msg("Failed to look up ghost while converting backfilled message")
 		}
@@ -166,7 +166,7 @@ func (dc *DiscordClient) FetchMessages(ctx context.Context, fetchParams bridgev2
 
 		converted = append(converted, &bridgev2.BackfillMessage{
 			ID:               discordid.MakeMessageID(msg.ID),
-			ConvertedMessage: dc.connector.MsgConv.ToMatrix(ctx, fetchParams.Portal, intent, dc.UserLogin, dc.Session, msg, knownThreadRootID),
+			ConvertedMessage: d.connector.MsgConv.ToMatrix(ctx, fetchParams.Portal, intent, d.UserLogin, d.Session, msg, knownThreadRootID),
 			Sender:           sender,
 			Timestamp:        msgTs,
 			StreamOrder:      parsedMsgID,
@@ -182,7 +182,7 @@ func (dc *DiscordClient) FetchMessages(ctx context.Context, fetchParams bridgev2
 			}
 			converted[len(converted)-1].ShouldBackfillThread = true
 			converted[len(converted)-1].LastThreadMessage = discordid.MakeMessageID(latest)
-			if err := dc.upsertThreadInfoFromMessage(ctx, msg); err != nil {
+			if err := d.upsertThreadInfoFromMessage(ctx, msg); err != nil {
 				log.Err(err).Str("message_id", msg.ID).Msg("Failed to store thread info while backfilling")
 			}
 		}
@@ -209,12 +209,12 @@ func (dc *DiscordClient) FetchMessages(ctx context.Context, fetchParams bridgev2
 	}, nil
 }
 
-func (dc *DiscordClient) GetBackfillMaxBatchCount(
+func (d *DiscordClient) GetBackfillMaxBatchCount(
 	_ context.Context,
 	portal *bridgev2.Portal,
 	_ *database.BackfillTask,
 ) int {
-	backfillQueueConfig := dc.connector.Bridge.Config.Backfill.Queue
+	backfillQueueConfig := d.connector.Bridge.Config.Backfill.Queue
 
 	switch portal.RoomType {
 	case database.RoomTypeDM:

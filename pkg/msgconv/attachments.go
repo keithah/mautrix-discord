@@ -39,19 +39,19 @@ type ReuploadedAttachment struct {
 	MimeType string
 }
 
-func (d *MessageConverter) ReuploadUnknownMedia(
+func (mc *MessageConverter) ReuploadUnknownMedia(
 	ctx context.Context,
 	url string,
 	allowEncryption bool,
 ) (*ReuploadedAttachment, error) {
-	return d.ReuploadMedia(ctx, url, "", "", -1, allowEncryption)
+	return mc.ReuploadMedia(ctx, url, "", "", -1, allowEncryption)
 }
 
 func mib(size int64) float64 {
 	return float64(size) / 1024 / 1024
 }
 
-func (d *MessageConverter) ReuploadMedia(
+func (mc *MessageConverter) ReuploadMedia(
 	ctx context.Context,
 	downloadURL string,
 	mimeType string,
@@ -94,18 +94,18 @@ func (d *MessageConverter) ReuploadMedia(
 		}
 		logEvt.Msg("Media download failed")
 		return nil, fmt.Errorf("%w: unexpected status code %d", bridgev2.ErrMediaDownloadFailed, resp.StatusCode)
-	} else if resp.ContentLength > d.MaxFileSize {
-		return nil, fmt.Errorf("%w (%.2f MiB > %.2f MiB)", bridgev2.ErrMediaTooLarge, mib(resp.ContentLength), mib(d.MaxFileSize))
+	} else if resp.ContentLength > mc.MaxFileSize {
+		return nil, fmt.Errorf("%w (%.2f MiB > %.2f MiB)", bridgev2.ErrMediaTooLarge, mib(resp.ContentLength), mib(mc.MaxFileSize))
 	}
 
 	requireFile := mimeType == ""
 	var size int64
 	mxc, file, err := intent.UploadMediaStream(ctx, roomID, int64(estimatedSize), requireFile, func(file io.Writer) (*bridgev2.FileStreamResult, error) {
 		var mbe *http.MaxBytesError
-		size, err = io.Copy(file, http.MaxBytesReader(nil, resp.Body, d.MaxFileSize))
+		size, err = io.Copy(file, http.MaxBytesReader(nil, resp.Body, mc.MaxFileSize))
 		if err != nil {
 			if errors.As(err, &mbe) {
-				return nil, fmt.Errorf("%w (over %.2f MiB)", bridgev2.ErrMediaTooLarge, mib(d.MaxFileSize))
+				return nil, fmt.Errorf("%w (over %.2f MiB)", bridgev2.ErrMediaTooLarge, mib(mc.MaxFileSize))
 			}
 			return nil, err
 		}

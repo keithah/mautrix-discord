@@ -38,7 +38,7 @@ var (
 	_ bridgev2.DirectMediableNetwork = (*DiscordConnector)(nil)
 )
 
-func (dc *DiscordConnector) Download(
+func (d *DiscordConnector) Download(
 	ctx context.Context,
 	mediaID networkid.MediaID,
 	params map[string]string,
@@ -48,18 +48,18 @@ func (dc *DiscordConnector) Download(
 		return nil, fmt.Errorf("failed to parse media id for download: %w", err)
 	}
 
-	return dc.downloadAttachment(ctx, info)
+	return d.downloadAttachment(ctx, info)
 }
 
-func (dc *DiscordConnector) SetUseDirectMedia() {
-	dc.MsgConv.DirectMedia = true
+func (d *DiscordConnector) SetUseDirectMedia() {
+	d.MsgConv.DirectMedia = true
 }
 
-func (dc *DiscordConnector) downloadAttachment(
+func (d *DiscordConnector) downloadAttachment(
 	ctx context.Context,
 	info *discordid.MediaInfo,
 ) (*mediaproxy.GetMediaResponseURL, error) {
-	url, expiresAt, err := dc.resolveAttachmentURL(ctx, info)
+	url, expiresAt, err := d.resolveAttachmentURL(ctx, info)
 	if err != nil {
 		return nil, fmt.Errorf("failed to refresh attachment url for download: %w", err)
 	}
@@ -74,28 +74,28 @@ func (dc *DiscordConnector) downloadAttachment(
 	}, nil
 }
 
-func (dc *DiscordConnector) resolveAttachmentURL(ctx context.Context, info *discordid.MediaInfo) (url string, expires time.Time, err error) {
-	if entry, ok := dc.attachmentCache.Get(info.MediaInfoV1); ok {
+func (d *DiscordConnector) resolveAttachmentURL(ctx context.Context, info *discordid.MediaInfo) (url string, expires time.Time, err error) {
+	if entry, ok := d.attachmentCache.Get(info.MediaInfoV1); ok {
 		return entry.URL, entry.Expiry, nil
 	}
 
-	url, expiresAt, err := dc.refreshAttachmentURL(ctx, info)
+	url, expiresAt, err := d.refreshAttachmentURL(ctx, info)
 	if err != nil {
 		return "", time.Time{}, err
 	}
 
-	dc.attachmentCache.Insert(info, url)
+	d.attachmentCache.Insert(info, url)
 	return url, expiresAt, nil
 }
 
-func (dc *DiscordConnector) refreshAttachmentURL(
+func (d *DiscordConnector) refreshAttachmentURL(
 	ctx context.Context,
 	info *discordid.MediaInfo,
 ) (url string, expires time.Time, err error) {
 	log := zerolog.Ctx(ctx).With().Str("action", "refresh attachment url").Logger()
 	ctx = log.WithContext(ctx)
 
-	login, err := dc.Bridge.GetExistingUserLoginByID(ctx, info.UserLoginID)
+	login, err := d.Bridge.GetExistingUserLoginByID(ctx, info.UserLoginID)
 	if err != nil {
 		return "", time.Time{}, err
 	} else if login == nil {
@@ -113,7 +113,7 @@ func (dc *DiscordConnector) refreshAttachmentURL(
 
 	parentChannelID := channelID
 	threadChannelID := ""
-	threadInfo, err := dc.DB.Thread.GetByThreadChannelID(ctx, string(info.UserLoginID), channelID)
+	threadInfo, err := d.DB.Thread.GetByThreadChannelID(ctx, string(info.UserLoginID), channelID)
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("failed to query thread info: %w", err)
 	} else if threadInfo != nil {
@@ -122,8 +122,8 @@ func (dc *DiscordConnector) refreshAttachmentURL(
 	}
 
 	var requestOptions []discordgo.RequestOption
-	portalKey := discordid.MakeChannelPortalKey(parentChannelID, info.UserLoginID, dc.Bridge.Config.SplitPortals)
-	portal, err := dc.Bridge.GetExistingPortalByKey(ctx, portalKey)
+	portalKey := discordid.MakeChannelPortalKey(parentChannelID, info.UserLoginID, d.Bridge.Config.SplitPortals)
+	portal, err := d.Bridge.GetExistingPortalByKey(ctx, portalKey)
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("failed to query portal for direct media: %w", err)
 	} else if portal != nil {

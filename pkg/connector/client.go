@@ -153,32 +153,32 @@ func (d *DiscordClient) Connect(ctx context.Context) {
 const maxGatewayConnectRetries = 5
 
 // tokenInvalidated responds to Discord invalidating our token.
-func (cl *DiscordClient) tokenInvalidated(ctx context.Context, circumstance string) {
+func (d *DiscordClient) tokenInvalidated(ctx context.Context, circumstance string) {
 	log := zerolog.Ctx(ctx)
 	log.Info().Msg("Invalidating user login")
 
-	cl.UserLogin.BridgeState.Send(status.BridgeState{
+	d.UserLogin.BridgeState.Send(status.BridgeState{
 		StateEvent: status.StateBadCredentials,
 		Error:      DCWebsocketDisconnect4004,
 		UserAction: status.UserActionRelogin,
 	})
 
-	props := cl.baseAnalyticsProps(ctx)
+	props := d.baseAnalyticsProps(ctx)
 	props["circumstance"] = circumstance
-	cl.UserLogin.TrackAnalytics("Discord auth invalidation", props)
+	d.UserLogin.TrackAnalytics("Discord auth invalidation", props)
 
 	// Empty out the token.
 	log.Debug().Msg("Emptying token")
-	meta := cl.UserLogin.Metadata.(*discordid.UserLoginMetadata)
+	meta := d.UserLogin.Metadata.(*discordid.UserLoginMetadata)
 	meta.Token = ""
-	if err := cl.UserLogin.Save(ctx); err != nil {
+	if err := d.UserLogin.Save(ctx); err != nil {
 		log.Err(err).Msg("Failed to save user login in order to invalidate session")
 	}
 }
 
-func (cl *DiscordClient) connectRetrying(ctx context.Context, retryCount int) {
+func (d *DiscordClient) connectRetrying(ctx context.Context, retryCount int) {
 	retryCtx, cancel := context.WithCancel(ctx)
-	oldStop := cl.stopConnecting.Swap(&cancel)
+	oldStop := d.stopConnecting.Swap(&cancel)
 	if oldStop != nil {
 		(*oldStop)()
 	}
@@ -186,11 +186,11 @@ func (cl *DiscordClient) connectRetrying(ctx context.Context, retryCount int) {
 	log := zerolog.Ctx(ctx).With().Int("retry_count", retryCount).Logger()
 
 	log.Debug().Msg("Connecting to Discord")
-	cl.UserLogin.BridgeState.Send(status.BridgeState{
+	d.UserLogin.BridgeState.Send(status.BridgeState{
 		StateEvent: status.StateConnecting,
 	})
 
-	err := cl.connect(ctx)
+	err := d.connect(ctx)
 	if err != nil {
 		log.Err(err).Msg("Couldn't connect to Discord")
 
@@ -201,9 +201,9 @@ func (cl *DiscordClient) connectRetrying(ctx context.Context, retryCount int) {
 			// once you've already connected successfully.)
 			//
 			// Don't retry.
-			cl.tokenInvalidated(ctx, "when connecting")
+			d.tokenInvalidated(ctx, "when connecting")
 		} else if retryCount <= maxGatewayConnectRetries {
-			cl.UserLogin.BridgeState.Send(status.BridgeState{
+			d.UserLogin.BridgeState.Send(status.BridgeState{
 				StateEvent: status.StateTransientDisconnect,
 				Error:      DCUnknownWebsocketError,
 				Message:    err.Error(),
@@ -219,9 +219,9 @@ func (cl *DiscordClient) connectRetrying(ctx context.Context, retryCount int) {
 				log.Debug().Msg("Was told to stop connecting")
 				return
 			}
-			cl.connectRetrying(ctx, retryCount+1)
+			d.connectRetrying(ctx, retryCount+1)
 		} else {
-			cl.UserLogin.BridgeState.Send(status.BridgeState{
+			d.UserLogin.BridgeState.Send(status.BridgeState{
 				StateEvent: status.StateUnknownError,
 				Error:      DCUnknownWebsocketError,
 				Message:    err.Error(),
@@ -232,53 +232,53 @@ func (cl *DiscordClient) connectRetrying(ctx context.Context, retryCount int) {
 	}
 }
 
-func (cl *DiscordClient) handleDiscordEventSync(event any) {
+func (d *DiscordClient) handleDiscordEventSync(event any) {
 	// Dispatch event handlers that maintain important state synchronously, or
 	// else we might end up relying on goroutine scheduling.
-	cl.handleDiscordStateEvent(event)
-	go cl.handleDiscordEvent(event)
+	d.handleDiscordStateEvent(event)
+	go d.handleDiscordEvent(event)
 }
 
-func (cl *DiscordClient) connect(ctx context.Context) error {
+func (d *DiscordClient) connect(ctx context.Context) error {
 	log := zerolog.Ctx(ctx)
 	log.Info().Msg("Opening session")
 
-	cl.Session.EventHandler = cl.handleDiscordEventSync
+	d.Session.EventHandler = d.handleDiscordEventSync
 
-	err := cl.Session.Open()
+	err := d.Session.Open()
 	if err != nil {
 		log.Err(err).Msg("Failed to connect to Discord")
 		return err
 	}
 
 	// Ensure that we actually have a user.
-	if !cl.IsLoggedIn() {
+	if !d.IsLoggedIn() {
 		return fmt.Errorf("unknown identity even after connecting to Discord")
 	}
-	user := cl.Session.State.User
+	user := d.Session.State.User
 	log.Info().Str("user_id", user.ID).Str("user_username", user.Username).Msg("Connected to Discord")
 
 	// Populate the user cache with the users from the READY payload.
-	ready := cl.Session.State.Ready
+	ready := d.Session.State.Ready
 	log.Debug().Int("n_users", len(ready.Users)).Msg("Inserting users from READY into cache")
-	cl.userCache.UpdateWithReady(&ready)
+	d.userCache.UpdateWithReady(&ready)
 
 	readState := ready.ReadState
 	// Populate the read state mapping.
 	if readState != nil {
-		cl.readStatesLock.Lock()
+		d.readStatesLock.Lock()
 		for _, state := range readState.Entries {
-			cl.readStates[state.ID] = state
+			d.readStates[state.ID] = state
 		}
-		cl.readStatesLock.Unlock()
+		d.readStatesLock.Unlock()
 	}
 
 	settings := ready.UserGuildSettings
 	if settings != nil {
-		cl.bulkApplyGuildSettings(settings)
+		d.bulkApplyGuildSettings(settings)
 	}
 
-	cl.BeginSyncing(ctx)
+	d.BeginSyncing(ctx)
 
 	return nil
 }
@@ -341,16 +341,16 @@ func (d *DiscordClient) LogoutRemote(ctx context.Context) {
 // BeginSyncing kicks off background sync of the remote profile, all private
 // channels, and bridged guilds. This occurs asynchronously. This should only
 // be called once the gateway connection is READY or RESUMED.
-func (cl *DiscordClient) BeginSyncing(ctx context.Context) {
-	if cl.hasBegunSyncing {
-		cl.connector.Bridge.Log.Warn().Msg("Not beginning sync more than once")
+func (d *DiscordClient) BeginSyncing(ctx context.Context) {
+	if d.hasBegunSyncing {
+		d.connector.Bridge.Log.Warn().Msg("Not beginning sync more than once")
 		return
 	}
-	cl.hasBegunSyncing = true
+	d.hasBegunSyncing = true
 
-	cl.syncRemoteProfile(ctx)
-	go cl.syncPrivateChannels(ctx)
-	go cl.syncGuilds(ctx)
+	d.syncRemoteProfile(ctx)
+	go d.syncPrivateChannels(ctx)
+	go d.syncGuilds(ctx)
 }
 
 func (d *DiscordClient) existingPortals(ctx context.Context) iter.Seq[*bridgev2.Portal] {
