@@ -31,9 +31,6 @@ import (
 	"go.mau.fi/util/ptr"
 )
 
-// TODO(skip): Helper for constructing requests (optionally accepting a JSON
-// body).
-
 // An AuthMachine governs the core logic to authenticate with Discord. It is
 // concerned with:
 //
@@ -368,17 +365,10 @@ func (am *AuthMachine) Login(ctx context.Context, creds *Creds) (*LoginCompleted
 		return nil, fmt.Errorf("can't log in without a fingerprint (forgot to call Prepare?)")
 	}
 
-	credsBody, err := json.Marshal(creds)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal creds: %w", err)
-	}
-
-	url := fmt.Sprintf("%s/auth/login", am.APIBase)
-	firstLoginReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(credsBody))
+	firstLoginReq, err := am.POST(ctx, "/auth/login", creds)
 	if err != nil {
 		return nil, fmt.Errorf("failed to construct login request: %w", err)
 	}
-	firstLoginReq.Header.Set("Content-Type", "application/json")
 
 	_, body, err := am.doHandlingCaptcha(ctx, firstLoginReq)
 	if err != nil {
@@ -431,15 +421,9 @@ func (am *AuthMachine) handleFirstLoginResponse(ctx context.Context, loginRespBo
 }
 
 func (am *AuthMachine) requestSMSCode(ctx context.Context, state *MFAState) (*SMSSendResponse, error) {
-	sendSmsBody, err := json.Marshal(SMSSendRequest{
+	smsSendReq, err := am.POST(ctx, "/auth/mfa/sms/send", SMSSendRequest{
 		Ticket: state.Ticket,
 	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal sms send request: %w", err)
-	}
-
-	url := fmt.Sprintf("%s/auth/mfa/sms/send", am.APIBase)
-	smsSendReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(sendSmsBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to construct SMS send code request: %w", err)
 	}
@@ -502,17 +486,10 @@ func (am *AuthMachine) tryHandlingMFA(ctx context.Context, loginRespBody []byte)
 
 	log.Info().Str("mfa_type", string(cont.Type)).Msg("Continuing with MFA flow")
 
-	contBody, err := json.Marshal(cont.MFAContinuation)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal MFA continuation: %w", err)
-	}
-
-	url := fmt.Sprintf("%s/auth/mfa/%s", am.APIBase, cont.Type)
-	contReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(contBody))
+	contReq, err := am.POST(ctx, fmt.Sprintf("/auth/mfa/%s", cont.Type), cont.MFAContinuation)
 	if err != nil {
 		return nil, fmt.Errorf("failed to construct MFA continuation request: %w", err)
 	}
-	contReq.Header.Set("Content-Type", "application/json")
 
 	_, body, err := am.doHandlingCaptcha(ctx, contReq)
 	if err != nil {
@@ -532,4 +509,20 @@ func (am *AuthMachine) tryHandlingMFA(ctx context.Context, loginRespBody []byte)
 	}
 
 	return &completed, nil
+}
+
+func (am *AuthMachine) POST(ctx context.Context, endpoint string, jsonBody any) (*http.Request, error) {
+	jsonBytes, err := json.Marshal(jsonBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal body for request: %w", err)
+	}
+
+	url := am.APIBase + endpoint
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to make POST request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	return req, nil
 }
