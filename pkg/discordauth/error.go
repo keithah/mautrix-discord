@@ -16,7 +16,10 @@
 
 package discordauth
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // TODO(skip): Some overlap with this and discordgo. Sort that out.
 
@@ -25,10 +28,86 @@ type APIError struct {
 	Code    ErrCode `json:"code"`
 
 	// Detailed errors. Returned for e.g. [InvalidFormBody].
-	Errors map[string]any `json:"errors"`
+	//
+	// The keys in this map correspond to the top-level keys that were sent in
+	// your request body. The value reconstructs the shape of the data that was
+	// sent, with arbitrary depth.
+	//
+	// For example, a request body such as
+	//
+	//     { "friends": [ { "enjoys_pineapple_on_pizza": false } ] }
+	//
+	// might result in this erroneous reply:
+	//
+	//     {
+	//       ...,
+	//       "errors": {
+	//         "friends": {
+	//           "0": {
+	//             "enjoys_pineapple_on_pizza": {
+	//               "_errors": [
+	//                 {
+	//                   "code": "CHECK_YOUR_OPINION",
+	//                   "message": "Everybody likes pineapple on pizza. Try again."
+	//                 }
+	//               ]
+	//             }
+	//           }
+	//         }
+	//       }
+	//     }
+	//
+	// Notice how:
+	//
+	// - The intermediate values are always objects. Array indices are
+	//   represented with strings.
+	//
+	// - The erroneous request value terminates in an object containing an
+	//   array keyed under _errors.
+	//
+	// The _errors array further contains objects of shape { code, message }.
+	Errors map[string]json.RawMessage `json:"errors"`
 
 	// The raw HTTP response body.
 	ResponseBody []byte `json:"-"`
+}
+
+// A FormError communicates detailed error information for certain JSON field.
+type FormError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type FormErrorCode string
+
+const (
+	// AccountLoginVerificationEmail is raised when the user is logging in from
+	// a new IP address and must check their email for a verification link.
+	AccountLoginVerificationEmail FormErrorCode = "ACCOUNT_LOGIN_VERIFICATION_EMAIL"
+)
+
+// FormFieldErrors returns the [FormError] values associated with the
+// given key that had been sent in the request. If the key present or
+// the errors array is empty for whatever reason, nil is returned.
+//
+// NOTE/TODO: This function does not currently support accessing fields beyond
+// the first level.
+func (err *APIError) FormFieldErrors(key string) ([]FormError, error) {
+	leafMsg, ok := err.Errors[key]
+	if !ok {
+		return nil, nil
+	}
+
+	type ErrorsLeaf struct {
+		Errors []FormError `json:"_errors"`
+	}
+
+	var leaf ErrorsLeaf
+	if err := json.Unmarshal(leafMsg, &leaf); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal errors leaf: %w", err)
+	}
+
+	return leaf.Errors, nil
 }
 
 var _ error = (*APIError)(nil)
