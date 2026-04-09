@@ -1006,6 +1006,24 @@ func (d *DiscordClient) relationshipWithDMRecipient(ch *discordgo.Channel) *disc
 	return rel
 }
 
+// dmChannelForUserID finds the DM channel with the given user, if any.
+func (d *DiscordClient) dmChannelForUserID(userID string) *discordgo.Channel {
+	if d.Session == nil || d.Session.State == nil {
+		return nil
+	}
+
+	d.Session.State.RLock()
+	defer d.Session.State.RUnlock()
+
+	for _, ch := range d.Session.State.PrivateChannels {
+		if len(ch.RecipientIDs) == 1 && ch.RecipientIDs[0] == userID {
+			return ch
+		}
+	}
+
+	return nil
+}
+
 func (d *DiscordClient) rebuildRelationships() {
 	if d.Session == nil || d.Session.State == nil {
 		return

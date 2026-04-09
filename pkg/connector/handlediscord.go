@@ -587,6 +587,43 @@ func (d *DiscordClient) handleDiscordStateEvent(rawEvt any) {
 	}
 }
 
+func (d *DiscordClient) handleRelationshipNickChange(ctx context.Context, userID, nickname string) {
+	ch := d.dmChannelForUserID(userID)
+	if ch == nil {
+		return
+	}
+
+	portalKey := d.portalKeyForChannel(ch)
+	portal, err := d.connector.Bridge.GetExistingPortalByKey(ctx, portalKey)
+	if err != nil {
+		zerolog.Ctx(ctx).Err(err).Msg("Failed to look up DM portal for relationship nick change")
+		return
+	}
+	if portal == nil || portal.MXID == "" {
+		return
+	}
+
+	var name *string
+	if nickname != "" {
+		name = &nickname
+	} else {
+		name = bridgev2.DefaultChatName
+	}
+
+	d.UserLogin.QueueRemoteEvent(&simplevent.ChatInfoChange{
+		EventMeta: simplevent.EventMeta{
+			Type:      bridgev2.RemoteEventChatInfoChange,
+			PortalKey: portalKey,
+			Timestamp: time.Now(),
+		},
+		ChatInfoChange: &bridgev2.ChatInfoChange{
+			ChatInfo: &bridgev2.ChatInfo{
+				Name: name,
+			},
+		},
+	})
+}
+
 func (d *DiscordClient) handleDiscordEvent(rawEvt any) {
 	defer func() {
 		err := recover()
@@ -819,6 +856,8 @@ func (d *DiscordClient) handleDiscordEvent(rawEvt any) {
 		} else {
 			d.UserLogin.Bridge.QueueRemoteEvent(d.UserLogin, wrappedEvt)
 		}
+	// TODO case *discordgo.MessageReactionRemoveAll:
+	// TODO case *discordgo.MessageReactionRemoveEmoji: (needs impl. in discordgo)
 	case *discordgo.MessageReactionRemove:
 		bridged, route := d.channelIsBridged(ctx, evt.ChannelID)
 		if !bridged {
@@ -830,8 +869,16 @@ func (d *DiscordClient) handleDiscordEvent(rawEvt any) {
 		} else {
 			d.UserLogin.Bridge.QueueRemoteEvent(d.UserLogin, wrappedEvt)
 		}
-	// TODO case *discordgo.MessageReactionRemoveAll:
-	// TODO case *discordgo.MessageReactionRemoveEmoji: (needs impl. in discordgo)
+	// NOTE: Relationship updates are also handled in handleDiscordStateEvent,
+	// which is synchronously invoked before this one. This is to ensure
+	// coherence in the face of concurrency, because this method is always
+	// dispatched on a new goroutine.
+	case *discordgo.RelationshipAdd:
+		d.handleRelationshipNickChange(ctx, evt.ID, evt.Nickname)
+	case *discordgo.RelationshipUpdate:
+		d.handleRelationshipNickChange(ctx, evt.ID, evt.Nickname)
+	case *discordgo.RelationshipRemove:
+		d.handleRelationshipNickChange(ctx, evt.ID, "")
 	case *discordgo.PresenceUpdate:
 		return
 	case *discordgo.MessageAck:
