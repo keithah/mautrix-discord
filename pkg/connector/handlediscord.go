@@ -511,10 +511,8 @@ func (d *DiscordClient) handleGuildMemberJoinMessage(ctx context.Context, msg *d
 	d.queueIndividualMembershipChange(ctx, route.PortalKey, msg.Author, event.MembershipJoin, ts)
 }
 
-func (d *DiscordClient) handleMessageAck(ctx context.Context, ack *discordgo.MessageAck) {
+func (d *DiscordClient) handleMessageAck(ctx context.Context, ack *discordgo.MessageAck, bridged bool, route *router.Route) {
 	d.readStatesLock.Lock()
-	defer d.readStatesLock.Unlock()
-
 	zerolog.Ctx(ctx).Trace().
 		Str("channel_id", ack.ChannelID).
 		Str("message_id", ack.MessageID).
@@ -526,6 +524,19 @@ func (d *DiscordClient) handleMessageAck(ctx context.Context, ack *discordgo.Mes
 	d.readStates[ack.ChannelID] = &discordgo.ReadState{
 		ID:            ack.ChannelID,
 		LastMessageID: discordgo.StringOrInt(ack.MessageID),
+	}
+	d.readStatesLock.Unlock()
+
+	if bridged {
+		d.UserLogin.Bridge.QueueRemoteEvent(d.UserLogin, &simplevent.Receipt{
+			EventMeta: simplevent.EventMeta{
+				Type:              bridgev2.RemoteEventReadReceipt,
+				PortalKey:         route.PortalKey,
+				Sender:            d.selfEventSender(),
+				UncertainReceiver: route.Uncertain,
+			},
+			LastTarget: discordid.MakeMessageID(ack.MessageID),
+		})
 	}
 }
 
@@ -882,7 +893,8 @@ func (d *DiscordClient) handleDiscordEvent(rawEvt any) {
 	case *discordgo.PresenceUpdate:
 		return
 	case *discordgo.MessageAck:
-		d.handleMessageAck(ctx, evt)
+		bridged, route := d.channelIsBridged(ctx, evt.ChannelID)
+		d.handleMessageAck(ctx, evt, bridged, route)
 	case *discordgo.UserGuildSettingsUpdate:
 		d.handleUserGuildSettingsUpdate(ctx, evt)
 	case *discordgo.GuildDelete:
