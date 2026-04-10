@@ -18,6 +18,7 @@ package connector
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -72,6 +73,9 @@ func (d *DiscordConnector) setUpProvisioningAPIs() error {
 	}
 
 	// NOTE: aim to provide backwards compatibility with v1 provisioning APIs
+	r.HandleFunc("POST /v1/login/token", p.legacyTokenLogin)
+	r.HandleFunc("GET /v1/ping", p.legacyPing)
+	r.HandleFunc("POST /v1/logout", p.legacyLogout)
 	r.HandleFunc("GET /v1/guilds", p.makeHandler(p.guildsList, true))
 	r.HandleFunc("POST /v1/guilds/{guildID}", p.makeHandler(p.bridgeGuild, true))
 	// Unbridging doesn't touch discordgo, so it's okay to do it even when
@@ -266,6 +270,130 @@ func (p *ProvisioningAPI) bridgeGuild(w http.ResponseWriter, r *http.Request, lo
 		responseStatus = 200
 	}
 	exhttp.WriteJSONResponse(w, responseStatus, nil)
+}
+
+// Legacy v1 provisioning endpoints for backwards compatibility with clients
+// that haven't migrated to the bridgev2 provisioning API yet.
+
+func (p *ProvisioningAPI) legacyTokenLogin(w http.ResponseWriter, r *http.Request) {
+	user := p.prov.GetUser(r)
+
+	if logins := user.GetUserLogins(); len(logins) > 0 {
+		for _, login := range logins {
+			client := login.Client.(*DiscordClient)
+			if client.HasToken() {
+				exhttp.WriteJSONResponse(w, http.StatusConflict, mautrix.RespError{
+					ErrCode: ErrCodeAlreadyLoggedIn,
+					Err:     "already logged in to Discord",
+				})
+				return
+			}
+		}
+	}
+
+	var body struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		exhttp.WriteJSONResponse(w, http.StatusBadRequest, mautrix.RespError{
+			ErrCode: mautrix.MBadJSON.ErrCode,
+			Err:     "failed to parse request body",
+		})
+		return
+	}
+	if body.Token == "" {
+		exhttp.WriteJSONResponse(w, http.StatusBadRequest, mautrix.RespError{
+			ErrCode: mautrix.MBadJSON.ErrCode,
+			Err:     "missing token",
+		})
+		return
+	}
+
+	login, err := p.connector.CreateLogin(r.Context(), user, LoginFlowIDToken)
+	if err != nil {
+		p.log.Err(err).Msg("Failed to create login process")
+		exhttp.WriteJSONResponse(w, http.StatusInternalServerError, mautrix.RespError{
+			ErrCode: ErrCodeLoginPrepareFailed,
+			Err:     "failed to prepare login",
+		})
+		return
+	}
+	_, err = login.Start(r.Context())
+	if err != nil {
+		p.log.Err(err).Msg("Failed to start login process")
+		exhttp.WriteJSONResponse(w, http.StatusInternalServerError, mautrix.RespError{
+			ErrCode: ErrCodeLoginPrepareFailed,
+			Err:     "failed to start login",
+		})
+		return
+	}
+	_, err = login.(bridgev2.LoginProcessUserInput).SubmitUserInput(r.Context(), map[string]string{
+		"token": body.Token,
+	})
+	if err != nil {
+		p.log.Err(err).Msg("Failed to submit token")
+		exhttp.WriteJSONResponse(w, http.StatusUnauthorized, mautrix.RespError{
+			ErrCode: ErrCodePostLoginConnFailed,
+			Err:     "failed to connect to Discord",
+		})
+		return
+	}
+
+	discordUser := login.(*DiscordTokenLogin).DiscordUser
+	exhttp.WriteJSONResponse(w, http.StatusOK, map[string]any{
+		"success":       true,
+		"id":            discordUser.ID,
+		"username":      discordUser.Username,
+		"discriminator": discordUser.Discriminator,
+	})
+}
+
+func (p *ProvisioningAPI) legacyPing(w http.ResponseWriter, r *http.Request) {
+	user := p.prov.GetUser(r)
+
+	resp := map[string]any{
+		"mxid":            user.MXID,
+		"management_room": user.ManagementRoom,
+	}
+
+	discord := map[string]any{
+		"logged_in": false,
+		"connected": false,
+	}
+
+	if logins := user.GetUserLogins(); len(logins) > 0 {
+		login := logins[0]
+		client := login.Client.(*DiscordClient)
+		discord["id"] = discordid.ParseUserLoginID(login.ID)
+		discord["logged_in"] = client.HasToken()
+		discord["connected"] = client.IsLoggedIn()
+		if client.Session != nil {
+			discord["conn"] = map[string]any{
+				"last_heartbeat_ack":  client.Session.LastHeartbeatAck.UnixMilli(),
+				"last_heartbeat_sent": client.Session.LastHeartbeatSent.UnixMilli(),
+			}
+		}
+	}
+
+	resp["Discord"] = discord
+	exhttp.WriteJSONResponse(w, http.StatusOK, resp)
+}
+
+func (p *ProvisioningAPI) legacyLogout(w http.ResponseWriter, r *http.Request) {
+	user := p.prov.GetUser(r)
+	logins := user.GetUserLogins()
+	if len(logins) == 0 {
+		exhttp.WriteJSONResponse(w, http.StatusOK, map[string]any{
+			"success": true,
+			"status":  "not logged in",
+		})
+		return
+	}
+	logins[0].Logout(r.Context())
+	exhttp.WriteJSONResponse(w, http.StatusOK, map[string]any{
+		"success": true,
+		"status":  "logged out successfully",
+	})
 }
 
 func (p *ProvisioningAPI) unbridgeGuild(w http.ResponseWriter, r *http.Request, login *bridgev2.UserLogin, client *DiscordClient) {
