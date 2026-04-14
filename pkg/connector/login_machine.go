@@ -1,0 +1,482 @@
+// mautrix-discord - A Matrix-Discord puppeting bridge.
+// Copyright (C) 2026 Tulir Asokan
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+package connector
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"sync"
+
+	"github.com/bwmarrin/discordgo"
+	"github.com/google/uuid"
+	"github.com/rs/zerolog"
+	"maunium.net/go/mautrix/bridgev2"
+
+	"go.mau.fi/mautrix-discord/pkg/discordauth"
+)
+
+const LoginFlowIDMachine = "machine"
+const LoginStepIDMachineInitialCreds = "fi.mau.discord.creds"
+const LoginStepIDMachineWait = "fi.mau.discord.wait"
+const LoginStepIDMachineMFAMethod = "fi.mau.discord.mfa.method"
+const LoginStepIDMachineMFATOTP = "fi.mau.discord.mfa.totp"
+const LoginStepIDMachineMFASMS = "fi.mau.discord.mfa.sms"
+const InputDataFieldIDUsernameOrPhone = "username_or_phone"
+const InputDataFieldIDPassword = "password"
+const InputDataFieldIDMFAMethod = "mfa_method"
+const InputDataFieldIDMFASMSCode = "sms_code"
+const InputDataFieldIDMFATOTPCode = "totp_code"
+
+type mfaOption string
+
+const (
+	mfaSms    mfaOption = "Text me a code"
+	mfaTotp   mfaOption = "Use my authenticator app"
+	mfaBackup mfaOption = "Enter a backup code"
+)
+
+// For simplicity, AuthMachine exposes a blocking, "straight-line" API:
+// Prepare/Login do not yield intermediate preemption flows. Instead, they
+// synchronously call back into our ChallengeHandler methods (e.g. ContinueMFA
+// or SolveCaptcha) whenever user input is needed. CAPTCHA handling makes this
+// especially awkward, as any request in the flow may be preempted by one or
+// more CAPTCHA challenges before the original request can complete. This is
+// documented in further detail in the discordauth package.
+//
+// Anyhow, bridgev2 is the opposite shape: login is step-based and
+// request-scoped, and each provisioning request must return a LoginStep before
+// its context is canceled. To bridge that mismatch, AuthMachine runs on a
+// long-lived background goroutine. That worker emits signals such as "prompt
+// the user", "login complete", or "login failed", and DiscordMachineLogin
+// translates them into bridgev2 steps. User replies are then forwarded back to
+// the worker so the synchronous AuthMachine flow can continue. Channels are
+// used to bridge the gap.
+//
+// In practice, this means returning a dummy DisplayAndWait step to hand
+// control back to bridgev2 as our Wait method drains the next signal.
+
+type DiscordMachineLogin struct {
+	*DiscordGenericLogin
+	Machine *discordauth.AuthMachine
+
+	machineCtx    context.Context
+	cancelMachine context.CancelFunc
+
+	currentlyPending   *pendingPrompt
+	currentlyPendingMu sync.Mutex
+
+	signals chan machineSignal
+}
+
+type machineSignal struct {
+	prompt *pendingPrompt
+	done   *discordauth.LoginCompleted
+	err    error
+}
+type pendingPrompt struct {
+	step  *bridgev2.LoginStep
+	reply chan map[string]string
+}
+
+var _ discordauth.ChallengeHandler = (*DiscordMachineLogin)(nil)
+var _ bridgev2.LoginProcessUserInput = (*DiscordMachineLogin)(nil)
+var _ bridgev2.LoginProcessDisplayAndWait = (*DiscordMachineLogin)(nil)
+
+func NewDiscordMachineLogin(ctx context.Context, login *DiscordGenericLogin) (*DiscordMachineLogin, error) {
+	http := login.User.Bridge.GetHTTPClientSettings().Compile()
+
+	launchSig, err := discordgo.NewVanillaSignature()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate launch signature: %w", err)
+	}
+
+	personality := discordauth.Personality{
+		UserAgent:    discordgo.DroidBrowserUserAgent,
+		Locale:       "en-US",
+		TimeZone:     "UTC",
+		DebugOptions: discordauth.DefaultDebugOptions,
+		// TODO dedupe with droid.go in discordgo
+		SuperProperties: discordauth.SuperProperties{
+			OS:                "Windows",
+			Browser:           "Chrome",
+			SystemLocale:      "en-US",
+			HasClientMods:     false,
+			BrowserUserAgent:  discordgo.DroidBrowserUserAgent,
+			BrowserVersion:    discordgo.DroidBrowserVersion,
+			OSVersion:         "10",
+			ReleaseChannel:    "stable",
+			ClientBuildNumber: 497254,
+			ClientLaunchID:    uuid.NewString(),
+			LaunchSignature:   launchSig,
+			ClientAppState:    "focused",
+		},
+		ExtraHeaders: map[string]string{
+			"Sec-Fetch-Dest": "empty",
+			"Sec-Fetch-Mode": "cors",
+			"Sec-Fetch-Site": "same-origin",
+		},
+	}
+
+	ml := &DiscordMachineLogin{
+		DiscordGenericLogin: login,
+	}
+	ml.Machine = discordauth.NewAuthMachine(ctx, http, &personality, ml)
+	return ml, nil
+}
+
+func (d *DiscordMachineLogin) ContinueMFA(ctx context.Context, challenge *discordauth.MFAChallenge) (*discordauth.MFAContinue, error) {
+	log := zerolog.Ctx(ctx).With().
+		Str("action", "discord machine continue mfa").
+		Str("login_instance_id", challenge.LoginInstanceID).
+		Bool("mfa_required", challenge.MFARequired).
+		Bool("mfa_sms_enabled", challenge.SMSEnabled).
+		Bool("mfa_totp_enabled", challenge.TOTPEnabled).
+		Bool("mfa_backup_codes_accepted", challenge.BackupCodesAccepted).
+		Logger()
+	ctx = log.WithContext(ctx)
+
+	log.Info().Msg("Entering MFA login flow")
+
+	mfaOptions := make([]string, 0)
+	// (Reusing the identifier strings for each authenticator method from
+	// discordauth as the option enumeration values for the user prompt.)
+	if challenge.SMSEnabled {
+		mfaOptions = append(mfaOptions, string(mfaSms))
+	}
+	if challenge.TOTPEnabled {
+		mfaOptions = append(mfaOptions, string(mfaTotp))
+	}
+	if challenge.BackupCodesAccepted {
+		mfaOptions = append(mfaOptions, string(mfaBackup))
+	}
+
+	if len(mfaOptions) == 0 {
+		return nil, fmt.Errorf("no supported MFA methods available (WebAuthn is unimplemented)")
+	}
+
+	input, err := d.promptUser(ctx, &bridgev2.LoginStep{
+		Type:         bridgev2.LoginStepTypeUserInput,
+		StepID:       LoginStepIDMachineMFAMethod,
+		Instructions: "How do you want to verify it’s you?",
+		UserInputParams: &bridgev2.LoginUserInputParams{
+			Fields: []bridgev2.LoginInputDataField{
+				{
+					Type:    bridgev2.LoginInputFieldTypeSelect,
+					ID:      InputDataFieldIDMFAMethod,
+					Name:    "Verification Method",
+					Options: mfaOptions,
+				},
+			},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to prompt for MFA method: %w", err)
+	}
+
+	selectedMethod := mfaOption(input[InputDataFieldIDMFAMethod])
+
+	log = log.With().Str("mfa_selected_method", string(selectedMethod)).Logger()
+	ctx = log.WithContext(ctx)
+
+	log.Info().Msg("User selected MFA method")
+
+	switch selectedMethod {
+	case mfaBackup:
+		// FIXME
+		panic("unimplemented")
+	case mfaTotp:
+		input, err := d.promptUser(ctx, &bridgev2.LoginStep{
+			Type:         bridgev2.LoginStepTypeUserInput,
+			StepID:       LoginStepIDMachineMFATOTP,
+			Instructions: "Enter the code from your authenticator app.",
+			UserInputParams: &bridgev2.LoginUserInputParams{
+				Fields: []bridgev2.LoginInputDataField{
+					{
+						Type: bridgev2.LoginInputFieldType2FACode,
+						ID:   InputDataFieldIDMFATOTPCode,
+						Name: "Authentication code",
+						// TODO enforce length
+						Pattern: `^(\d+)$`,
+					},
+				},
+			},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to prompt user for TOTP code: %w", err)
+		}
+		log.Info().Msg("Received TOTP code from user, proceeding")
+
+		totpCode := input[InputDataFieldIDMFATOTPCode]
+		return &discordauth.MFAContinue{
+			Type: discordauth.AuthenticatorTOTP,
+			MFAContinuation: discordauth.MFAContinuation{
+				MFAState: challenge.MFAState,
+				Code:     totpCode,
+			},
+		}, nil
+	case mfaSms:
+		log.Info().Msg("Requesting SMS from Discord")
+		_, err := challenge.RequestSMS(ctx)
+
+		if err != nil {
+			log.Err(err).Msg("Failed to request SMS from Discord")
+			return nil, fmt.Errorf("failed to ask discord to send SMS: %w", err)
+		}
+		log.Info().Msg("Requested SMS from Discord")
+
+		input, err := d.promptUser(ctx, &bridgev2.LoginStep{
+			Type:         bridgev2.LoginStepTypeUserInput,
+			StepID:       LoginStepIDMachineMFASMS,
+			Instructions: "Enter the code Discord just texted you.",
+			UserInputParams: &bridgev2.LoginUserInputParams{
+				Fields: []bridgev2.LoginInputDataField{
+					{
+						Description: "The code might take a moment to arrive.",
+						ID:          InputDataFieldIDMFASMSCode,
+						Name:        "Verification code",
+						// TODO enforce length
+						Pattern: `^(\d+)$`,
+						Type:    bridgev2.LoginInputFieldType2FACode,
+					},
+				},
+			},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to prompt user for SMS code: %w", err)
+		}
+		smsCode := input[InputDataFieldIDMFASMSCode]
+		log.Info().Msg("Received SMS code from user, proceeding")
+
+		return &discordauth.MFAContinue{
+			Type: discordauth.AuthenticatorSMS,
+			MFAContinuation: discordauth.MFAContinuation{
+				MFAState: challenge.MFAState,
+				Code:     smsCode,
+			},
+		}, nil
+	default:
+		return nil, fmt.Errorf("unknown mfa method %v", selectedMethod)
+	}
+}
+
+func (d *DiscordMachineLogin) SolveCaptcha(ctx context.Context, cap *discordauth.Captcha) (*discordauth.CaptchaSolution, error) {
+	// FIXME
+	panic("unimplemented")
+}
+
+func (d *DiscordMachineLogin) Cancel() {
+	d.DiscordGenericLogin.Cancel()
+	if d.cancelMachine != nil {
+		d.cancelMachine()
+	}
+}
+
+func credsStep() *bridgev2.LoginStep {
+	return &bridgev2.LoginStep{
+		Type:   bridgev2.LoginStepTypeUserInput,
+		StepID: LoginStepIDMachineInitialCreds,
+		UserInputParams: &bridgev2.LoginUserInputParams{
+			Fields: []bridgev2.LoginInputDataField{
+				{
+					Type: bridgev2.LoginInputFieldTypeUsername,
+					ID:   InputDataFieldIDUsernameOrPhone,
+					Name: "Email or phone number",
+				},
+				{
+					Type: bridgev2.LoginInputFieldTypePassword,
+					ID:   InputDataFieldIDPassword,
+					Name: "Password",
+				},
+			},
+		},
+	}
+}
+
+func waitStep() *bridgev2.LoginStep {
+	return &bridgev2.LoginStep{
+		Type:         bridgev2.LoginStepTypeDisplayAndWait,
+		StepID:       LoginStepIDMachineWait,
+		Instructions: "Waiting for Discord…",
+		DisplayAndWaitParams: &bridgev2.LoginDisplayAndWaitParams{
+			Type: bridgev2.LoginDisplayTypeNothing,
+		},
+	}
+}
+
+func (d *DiscordMachineLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
+	return credsStep(), nil
+}
+
+func (d *DiscordMachineLogin) SubmitUserInput(ctx context.Context, input map[string]string) (*bridgev2.LoginStep, error) {
+	log := zerolog.Ctx(ctx)
+
+	d.currentlyPendingMu.Lock()
+	// (Avoid holding the mutex across the channel send.)
+	pending := d.currentlyPending
+	d.currentlyPending = nil
+	d.currentlyPendingMu.Unlock()
+
+	if pending != nil {
+		log.Info().Str("pending_step_id", pending.step.StepID).
+			Msg("Received user input for pending step ID, sending reply")
+		pending.reply <- input
+
+		// Go back to waiting for the worker to send a signal.
+		return waitStep(), nil
+	}
+
+	username := strings.TrimSpace(input[InputDataFieldIDUsernameOrPhone])
+	password := discordauth.NewSensitive(input[InputDataFieldIDPassword])
+	if username == "" {
+		return nil, fmt.Errorf("no username provided")
+	}
+	if password.IsZero() {
+		return nil, fmt.Errorf("no password provided")
+	}
+
+	err := d.startWorker(ctx, &discordauth.Creds{
+		Login:    username,
+		Password: password,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to start login worker: %w", err)
+	}
+
+	return waitStep(), nil
+}
+
+func (d *DiscordMachineLogin) startWorker(ctx context.Context, creds *discordauth.Creds) error {
+	// Act as a sort of "mailbox"; only buffer 1 signal at a time. Not
+	// unbuffered because it wouldn't be ideal to block the worker goroutine on
+	// waiting for the signal to be "consumed" per se.
+	d.signals = make(chan machineSignal, 1)
+
+	// Don't want ourselves to get cancelled if the enclosing context does, but
+	// we do want to preserve the data inside of the context (such as logging
+	// stuff).
+	//
+	// Also, shadow the original context to avoid using it by accident.
+	ctx, d.cancelMachine = context.WithCancel(context.WithoutCancel(ctx))
+	d.machineCtx = ctx
+
+	go func() {
+		// It's important that these calls occur on a goroutine because
+		// AuthMachine methods can call into our handlers (e.g. ContinueMFA),
+		// which need to synchronously prompt the user, and we need both sides
+		// of the reply/signal channels to work in order to avoid a deadlock.
+
+		err := d.Machine.Prepare(ctx)
+		if err != nil {
+			err = fmt.Errorf("failed to prepare login: %w", err)
+			_ = d.signal(d.machineCtx, machineSignal{err: err})
+			return
+		}
+
+		done, err := d.Machine.Login(ctx, creds)
+		log := zerolog.Ctx(ctx)
+		if err == nil {
+			log.Info().
+				Any("required_actions", done.RequiredActions).
+				Msg("Login finished")
+		} else {
+			log.Err(err).Msg("Login failed")
+		}
+
+		// At the moment this can only error if we get canceled, and we don't
+		// really care about that here. Just signal so we can tell bridgev2.
+		_ = d.signal(d.machineCtx, machineSignal{done: done, err: err})
+	}()
+
+	return nil
+}
+
+// signal should only be called by the background goroutine, and is used to
+// control the bridgev2 login process.
+func (d *DiscordMachineLogin) signal(ctx context.Context, sig machineSignal) error {
+	select {
+	case d.signals <- sig:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// promptUser should only be called by the background goroutine, and is used to
+// send a [bridgev2.LoginStep] to be presented to the user. The submitted
+// inputs are collected via channel and returned.
+func (d *DiscordMachineLogin) promptUser(ctx context.Context, step *bridgev2.LoginStep) (map[string]string, error) {
+	reply := make(chan map[string]string, 1)
+	pending := &pendingPrompt{step, reply}
+	if err := d.signal(ctx, machineSignal{prompt: pending}); err != nil {
+		return nil, err
+	}
+
+	select {
+	case input, ok := <-pending.reply:
+		if !ok {
+			return nil, context.Canceled
+		}
+		return input, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (d *DiscordMachineLogin) finalize(ctx context.Context, done *discordauth.LoginCompleted) (*bridgev2.LoginStep, error) {
+	ul, err := d.FinalizeCreatingLogin(ctx, done.Token.UnwrapSensitive())
+	if err != nil {
+		return nil, fmt.Errorf("couldn't log in via machine: %w", err)
+	}
+
+	return &bridgev2.LoginStep{
+		Type:   bridgev2.LoginStepTypeComplete,
+		StepID: LoginStepIDComplete,
+		CompleteParams: &bridgev2.LoginCompleteParams{
+			UserLoginID: ul.ID,
+			UserLogin:   ul,
+		},
+	}, nil
+}
+
+func (d *DiscordMachineLogin) Wait(ctx context.Context) (*bridgev2.LoginStep, error) {
+	select {
+	case signal := <-d.signals:
+		if signal.err != nil {
+			return nil, signal.err
+		}
+
+		if signal.done != nil {
+			return d.finalize(ctx, signal.done)
+		}
+
+		// Sanity check.
+		if signal.prompt == nil {
+			return nil, fmt.Errorf("unexpected empty prompt")
+		}
+
+		// Stash the prompt that we're about to show to the user so that we
+		// can properly reply when mautrix calls our SubmitUserInput method.
+		d.currentlyPendingMu.Lock()
+		d.currentlyPending = signal.prompt
+		d.currentlyPendingMu.Unlock()
+
+		return signal.prompt.step, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}

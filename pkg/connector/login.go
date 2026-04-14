@@ -42,6 +42,11 @@ func (d *DiscordConnector) GetLoginFlows() []bridgev2.LoginFlow {
 			Name:        "Token",
 			Description: "Provide a Discord user token to connect with.",
 		},
+		{
+			ID:          LoginFlowIDMachine,
+			Name:        "Email/Phone & Password",
+			Description: "Log in with an email or phone number and a password. Supports multi-factor authentication (e.g. TOTP, SMS, etc.)",
+		},
 	}
 }
 
@@ -58,6 +63,13 @@ func (d *DiscordConnector) CreateLogin(ctx context.Context, user *bridgev2.User,
 		return &DiscordRemoteAuthLogin{DiscordGenericLogin: &login}, nil
 	case LoginFlowIDBrowser:
 		return &DiscordBrowserLogin{DiscordGenericLogin: &login}, nil
+	case LoginFlowIDMachine:
+		mach, err := NewDiscordMachineLogin(ctx, &login)
+		if err != nil {
+			return nil, fmt.Errorf("failed to set up discord login machine: %w", err)
+		}
+
+		return mach, nil
 	default:
 		return nil, fmt.Errorf("unknown discord login flow id")
 	}
