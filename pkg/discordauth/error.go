@@ -19,6 +19,7 @@ package discordauth
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // TODO(skip): Some overlap with this and discordgo. Sort that out.
@@ -117,7 +118,29 @@ func (err *APIError) FormFieldErrors(key string) ([]FormError, error) {
 var _ error = (*APIError)(nil)
 
 func (err APIError) Error() string {
-	return fmt.Sprintf("Discord API error %d: \"%s\"", err.Code, err.Message)
+	msg := fmt.Sprintf("Discord API error %d: \"%s\"", err.Code, err.Message)
+
+	if err.Code == InvalidFormBody && err.Errors != nil {
+		fieldErrors := make([]string, 0)
+
+		for key := range err.Errors {
+			errors, err := err.FormFieldErrors(key)
+			if err != nil {
+				continue
+			}
+
+			summaries := make([]string, 0)
+			for _, error := range errors {
+				summaries = append(summaries, fmt.Sprintf("\"%s\" (%s)", error.Message, error.Code))
+			}
+
+			fieldErrors = append(fieldErrors, fmt.Sprintf("%s: %s", key, strings.Join(summaries, ", ")))
+		}
+
+		return msg + ": " + strings.Join(fieldErrors, "; ")
+	}
+
+	return msg
 }
 
 type ErrCode int
