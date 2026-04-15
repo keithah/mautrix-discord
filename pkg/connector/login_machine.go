@@ -35,10 +35,12 @@ const LoginStepIDMachineInitialCreds = "fi.mau.discord.creds"
 const LoginStepIDMachineWait = "fi.mau.discord.wait"
 const LoginStepIDMachineMFAMethod = "fi.mau.discord.mfa.method"
 const LoginStepIDMachineMFATOTP = "fi.mau.discord.mfa.totp"
+const LoginStepIDMachineMFABackup = "fi.mau.discord.mfa.backup"
 const LoginStepIDMachineMFASMS = "fi.mau.discord.mfa.sms"
 const InputDataFieldIDUsernameOrPhone = "username_or_phone"
 const InputDataFieldIDPassword = "password"
 const InputDataFieldIDMFAMethod = "mfa_method"
+const InputDataFieldIDMFABackupCode = "backup_code"
 const InputDataFieldIDMFASMSCode = "sms_code"
 const InputDataFieldIDMFATOTPCode = "totp_code"
 
@@ -197,8 +199,38 @@ func (d *DiscordMachineLogin) ContinueMFA(ctx context.Context, challenge *discor
 
 	switch selectedMethod {
 	case mfaBackup:
-		// FIXME
-		panic("unimplemented")
+		input, err := d.promptUser(ctx, &bridgev2.LoginStep{
+			Type:         bridgev2.LoginStepTypeUserInput,
+			StepID:       LoginStepIDMachineMFABackup,
+			Instructions: "If your authenticator app is unavailable, you can sign in with a backup code. Backup codes are meant for emergencies only.",
+			UserInputParams: &bridgev2.LoginUserInputParams{
+				Fields: []bridgev2.LoginInputDataField{
+					{
+						Type:        bridgev2.LoginInputFieldTypePassword,
+						ID:          InputDataFieldIDMFABackupCode,
+						Name:        "Backup code",
+						Description: "You won’t be able to use this backup code again.",
+					},
+				},
+			},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to prompt user for backup code: %w", err)
+		}
+		log.Info().Msg("Received backup code from user, proceeding")
+
+		backupCode := strings.TrimSpace(strings.ReplaceAll(
+			input[InputDataFieldIDMFABackupCode],
+			"-",
+			"",
+		))
+		return &discordauth.MFAContinue{
+			Type: discordauth.AuthenticatorBackup,
+			MFAContinuation: discordauth.MFAContinuation{
+				MFAState: challenge.MFAState,
+				Code:     backupCode,
+			},
+		}, nil
 	case mfaTotp:
 		input, err := d.promptUser(ctx, &bridgev2.LoginStep{
 			Type:         bridgev2.LoginStepTypeUserInput,
