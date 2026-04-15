@@ -18,6 +18,8 @@ package connector
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -33,6 +35,7 @@ import (
 const LoginFlowIDMachine = "machine"
 const LoginStepIDMachineInitialCreds = "fi.mau.discord.creds"
 const LoginStepIDMachineWait = "fi.mau.discord.wait"
+const LoginStepIDMachineCaptcha = "fi.mau.discord.captcha"
 const LoginStepIDMachineMFAMethod = "fi.mau.discord.mfa.method"
 const LoginStepIDMachineMFATOTP = "fi.mau.discord.mfa.totp"
 const LoginStepIDMachineMFABackup = "fi.mau.discord.mfa.backup"
@@ -71,6 +74,8 @@ const (
 //
 // In practice, this means returning a dummy DisplayAndWait step to hand
 // control back to bridgev2 as our Wait method drains the next signal.
+// CAPTCHA challenges reuse this plumbing via LoginStepTypeCookies, dispatching
+// through SubmitCookies.
 
 type DiscordMachineLogin struct {
 	*DiscordGenericLogin
@@ -97,6 +102,7 @@ type pendingPrompt struct {
 
 var _ discordauth.ChallengeHandler = (*DiscordMachineLogin)(nil)
 var _ bridgev2.LoginProcessUserInput = (*DiscordMachineLogin)(nil)
+var _ bridgev2.LoginProcessCookies = (*DiscordMachineLogin)(nil)
 var _ bridgev2.LoginProcessDisplayAndWait = (*DiscordMachineLogin)(nil)
 
 func NewDiscordMachineLogin(ctx context.Context, login *DiscordGenericLogin) (*DiscordMachineLogin, error) {
@@ -306,9 +312,135 @@ func (d *DiscordMachineLogin) ContinueMFA(ctx context.Context, challenge *discor
 	}
 }
 
+type ExtractionConfig struct {
+	SiteKey   string `json:"siteKey"`
+	Invisible bool   `json:"invisible"`
+	RqData    string `json:"rqdata,omitempty"`
+}
+
+const CaptchaExtractionField = "captcha_token"
+
+// FIXME: This redirection stub is only necessary to work around some behavior in
+// Beeper Desktop where it only attaches the event listeners that dispatch the
+// injected JS snippets after the page loads completely. We can't run JavaScript
+// "upon load", which is what we really want here. To get around that, we can
+// load a small page that merely forces a redirection to the right origin.
+//
+// (The exact Discord URL we end up at here is mostly irrelevant, but it would
+// be nice to avoid loading the actual SPA.)
+const captchaRedirectionStub = `<!DOCTYPE html>
+<title>Loading</title>
+<meta http-equiv="refresh" content="1;url=https://discord.com/company-information">`
+const captchaExtractionJSTemplate = `new Promise((res0, rej0) => {
+  if (!window.location.hostname.endsWith('discord.com')) {
+    return
+  }
+  if (window.__meow_captchaPromise) {
+    window.__meow_captchaPromise.then(res0, rej0)
+    return
+  }
+
+  const CFG = %__CONFIG_REPLACEME__%
+  window.__meow_captchaPromise = new Promise((resolve, reject) => {
+    window.__meow_h = () => {
+      const c = document.createElement('div')
+      c.style.cssText = 'position:fixed;inset:0;z-index:2147483646;' +
+        'background:#fff;display:flex;align-items:center;' +
+        'justify-content:center;padding:2rem'
+      document.body.append(c)
+
+      const id = hcaptcha.render(c, {
+        sitekey: CFG.siteKey,
+        size: CFG.invisible ? 'invisible' : 'normal',
+        callback: (token) => resolve({ captcha_token: token }),
+        'error-callback': (e) => reject(new Error('hcaptcha: ' + e)),
+        'expired-callback': () => reject(new Error('hcaptcha token expired')),
+        'chalexpired-callback': () => reject(new Error('hcaptcha challenge expired')),
+      })
+
+      if (CFG.rqdata) {
+        hcaptcha.setData(id, {rqdata: CFG.rqdata})
+      }
+      if (CFG.invisible) {
+        hcaptcha.execute(id)
+      }
+    }
+
+    const s = document.createElement('script')
+    s.src = 'https://js.hcaptcha.com/1/api.js?render=explicit&onload=__meow_h&recaptchacompat=off'
+    s.onerror = () => reject(new Error('failed to load hcaptcha'))
+    document.head.append(s)
+  })
+
+  window.__meow_captchaPromise.then(res0, rej0)
+})`
+
+func captchaExtractionJS(cap *discordauth.Captcha) (string, error) {
+	cfg := ExtractionConfig{
+		Invisible: cap.Invisible,
+	}
+	if cap.SiteKey != nil {
+		cfg.SiteKey = *cap.SiteKey
+	}
+	if cap.RqData != nil {
+		cfg.RqData = *cap.RqData
+	}
+
+	stateJSON, err := json.Marshal(cfg)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal extraction state: %w", err)
+	}
+
+	return strings.Replace(captchaExtractionJSTemplate, "%__CONFIG_REPLACEME__%", string(stateJSON), 1), nil
+}
+
 func (d *DiscordMachineLogin) SolveCaptcha(ctx context.Context, cap *discordauth.Captcha) (*discordauth.CaptchaSolution, error) {
-	// FIXME
-	panic("unimplemented")
+	log := cap.LogContext(zerolog.Ctx(ctx).With()).Logger()
+	ctx = log.WithContext(ctx)
+
+	log.Info().Msg("Encountered CAPTCHA challenge")
+
+	if cap.Service != discordauth.CaptchaServiceHCaptcha {
+		return nil, fmt.Errorf("%s captchas are currently unsupported", cap.Service)
+	}
+
+	extractJS, err := captchaExtractionJS(cap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compute captcha extraction JS: %w", err)
+	}
+	log.Debug().Str("captcha_js", extractJS).Msg("Computed CAPTCHA solution extraction JS")
+
+	dataURL := "data:text/html;base64," + base64.StdEncoding.EncodeToString([]byte(captchaRedirectionStub))
+
+	input, err := d.promptUser(ctx, &bridgev2.LoginStep{
+		Type:         bridgev2.LoginStepTypeCookies,
+		StepID:       LoginStepIDMachineCaptcha,
+		Instructions: "Discord is presenting a CAPTCHA challenge.",
+		CookiesParams: &bridgev2.LoginCookiesParams{
+			URL:       dataURL,
+			ExtractJS: extractJS,
+			Fields: []bridgev2.LoginCookieField{{
+				ID:       CaptchaExtractionField,
+				Required: true,
+				Sources: []bridgev2.LoginCookieFieldSource{{
+					Type: bridgev2.LoginCookieTypeSpecial,
+					Name: CaptchaExtractionField,
+				}},
+			}},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to prompt user to solve captcha: %w", err)
+	}
+
+	solutionToken := input[CaptchaExtractionField]
+	if solutionToken == "" {
+		return nil, fmt.Errorf("extracted captcha solution is blank")
+	}
+
+	return &discordauth.CaptchaSolution{
+		Solution: solutionToken,
+	}, nil
 }
 
 func (d *DiscordMachineLogin) Cancel() {
@@ -354,24 +486,21 @@ func (d *DiscordMachineLogin) Start(ctx context.Context) (*bridgev2.LoginStep, e
 	return credsStep(), nil
 }
 
+func (d *DiscordMachineLogin) SubmitCookies(ctx context.Context, cookies map[string]string) (*bridgev2.LoginStep, error) {
+	return d.tryDrainingPendingPrompt(ctx, cookies), nil
+}
+
 func (d *DiscordMachineLogin) SubmitUserInput(ctx context.Context, input map[string]string) (*bridgev2.LoginStep, error) {
 	log := zerolog.Ctx(ctx)
 
-	d.currentlyPendingMu.Lock()
-	// (Avoid holding the mutex across the channel send.)
-	pending := d.currentlyPending
-	d.currentlyPending = nil
-	d.currentlyPendingMu.Unlock()
-
-	if pending != nil {
-		log.Info().Str("pending_step_id", pending.step.StepID).
-			Msg("Received user input for pending step ID, sending reply")
-		pending.reply <- input
-
-		// Go back to waiting for the worker to send a signal.
-		return waitStep(), nil
+	// User input was submitted as part of a prompt that the worker signaled to
+	// us.
+	step := d.tryDrainingPendingPrompt(ctx, input)
+	if step != nil {
+		return step, nil
 	}
 
+	// Initial submission of the username/phone and password.
 	username := strings.TrimSpace(input[InputDataFieldIDUsernameOrPhone])
 	password := discordauth.NewSensitive(input[InputDataFieldIDPassword])
 	if username == "" {
@@ -381,6 +510,7 @@ func (d *DiscordMachineLogin) SubmitUserInput(ctx context.Context, input map[str
 		return nil, fmt.Errorf("no password provided")
 	}
 
+	log.Info().Msg("Starting worker goroutine")
 	err := d.startWorker(ctx, &discordauth.Creds{
 		Login:    username,
 		Password: password,
@@ -390,6 +520,28 @@ func (d *DiscordMachineLogin) SubmitUserInput(ctx context.Context, input map[str
 	}
 
 	return waitStep(), nil
+}
+
+func (d *DiscordMachineLogin) tryDrainingPendingPrompt(ctx context.Context, input map[string]string) *bridgev2.LoginStep {
+	log := zerolog.Ctx(ctx)
+
+	d.currentlyPendingMu.Lock()
+	// (Avoid holding the mutex across the channel send.)
+	pending := d.currentlyPending
+	d.currentlyPending = nil
+	d.currentlyPendingMu.Unlock()
+
+	if pending == nil {
+		log.Debug().Msg("No pending prompt")
+		return nil
+	}
+
+	log.Info().Str("pending_step_id", pending.step.StepID).
+		Msg("Received user input for pending step ID, sending reply")
+	pending.reply <- input
+
+	// Go back to waiting for the worker to send a signal.
+	return waitStep()
 }
 
 func (d *DiscordMachineLogin) startWorker(ctx context.Context, creds *discordauth.Creds) error {
@@ -426,6 +578,8 @@ func (d *DiscordMachineLogin) startWorker(ctx context.Context, creds *discordaut
 				Any("required_actions", done.RequiredActions).
 				Msg("Login finished")
 		} else {
+			// FIXME detect bad password/username and just retry the step
+			// instead of failing out
 			log.Err(err).Msg("Login failed")
 		}
 
