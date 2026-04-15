@@ -84,6 +84,10 @@ const (
 	// AccountLoginVerificationEmail is raised when the user is logging in from
 	// a new IP address and must check their email for a verification link.
 	AccountLoginVerificationEmail FormErrorCode = "ACCOUNT_LOGIN_VERIFICATION_EMAIL"
+
+	// InvalidLogin is raised when the username/phone or password was
+	// incorrect.
+	InvalidLogin FormErrorCode = "INVALID_LOGIN"
 )
 
 // FormFieldErrors returns the [FormError] values associated with the
