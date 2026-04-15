@@ -84,7 +84,13 @@ type LoginMFARequired struct {
 type MFAContinuation struct {
 	MFAState
 
-	Code string `json:"code"` // TOTP, SMS, backup, or WebAuthn
+	// The TOTP, SMS code, backup code, or Webauthn credential used to complete
+	// the MFA flow.
+	//
+	// Backup codes are displayed hyphenated in Discord's UI, which visually
+	// splits them in half. Discord's API will not accept backup codes with the
+	// hyphens intact, so they must be stripped before submission.
+	Code string `json:"code"`
 
 	GiftCodeSKUID *string `json:"gift_code_sku_id"`
 	LoginSource   *string `json:"login_source"`
