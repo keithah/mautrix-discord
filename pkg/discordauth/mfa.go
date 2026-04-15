@@ -106,6 +106,3 @@ type SMSSendRequest struct {
 type SMSSendResponse struct {
 	Phone string `json:"phone"` // partially redacted phone number
 }
-
-// FIXME(skip): Continue with backup code.
-// FIXME(skip): Continue with SMS.
