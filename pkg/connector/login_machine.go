@@ -291,7 +291,7 @@ func (d *DiscordMachineLogin) ContinueMFA(ctx context.Context, challenge *discor
 		if err != nil {
 			return nil, fmt.Errorf("failed to prompt user for SMS code: %w", err)
 		}
-		smsCode := input[InputDataFieldIDMFASMSCode]
+		smsCode := strings.TrimSpace(input[InputDataFieldIDMFASMSCode])
 		log.Info().Msg("Received SMS code from user, proceeding")
 
 		return &discordauth.MFAContinue{
