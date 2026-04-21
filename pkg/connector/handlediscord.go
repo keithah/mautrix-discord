@@ -91,6 +91,11 @@ type DiscordMessage struct {
 	ThreadRootID *networkid.MessageID
 }
 
+func (m *DiscordMessage) ShouldCreatePortal() bool {
+	// Do not create a portal merely to bridge a message deletion or edit.
+	return m.Type == bridgev2.RemoteEventMessage
+}
+
 func (m *DiscordMessage) ConvertEdit(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, existing []*database.Message) (*bridgev2.ConvertedEdit, error) {
 	log := zerolog.Ctx(ctx).With().
 		Str("action", "convert discord edit").Logger()
@@ -140,9 +145,10 @@ func (m *DiscordMessage) ConvertEdit(ctx context.Context, portal *bridgev2.Porta
 var (
 	_ bridgev2.RemoteMessage                          = (*DiscordMessage)(nil)
 	_ bridgev2.RemoteMessageWithTransactionID         = (*DiscordMessage)(nil)
+	_ bridgev2.RemoteMessageRemove                    = (*DiscordMessage)(nil)
+	_ bridgev2.RemoteEventThatMayCreatePortal         = (*DiscordMessage)(nil)
 	_ bridgev2.RemoteEventWithUncertainPortalReceiver = (*DiscordMessage)(nil)
 	_ bridgev2.RemoteEdit                             = (*DiscordMessage)(nil)
-	_ bridgev2.RemoteMessageRemove                    = (*DiscordMessage)(nil)
 )
 
 func (m *DiscordMessage) GetTargetMessage() networkid.MessageID {
@@ -802,8 +808,9 @@ func (d *DiscordClient) handleDiscordEvent(rawEvt any) {
 			return
 		}
 		ctx, log := messageCtx(ctx, evt.Message)
-		bridged, route := d.channelIsBridged(ctx, evt.ChannelID)
-		if !bridged {
+		inBridgedChannel, route := d.channelIsBridged(ctx, evt.ChannelID)
+		isDM := route != nil && route.FromChannel != nil && channelIsPrivate(route.FromChannel)
+		if !inBridgedChannel && !isDM {
 			return
 		}
 
