@@ -638,12 +638,20 @@ func (d *DiscordClient) handleRelationshipNickChange(ctx context.Context, userID
 func (d *DiscordClient) handleDiscordEvent(rawEvt any) {
 	defer func() {
 		err := recover()
-		if err != nil {
-			d.UserLogin.Log.Error().
-				Bytes(zerolog.ErrorStackFieldName, debug.Stack()).
-				Any(zerolog.ErrorFieldName, err).
-				Msg("Panic in Discord event handler")
+		if err == nil {
+			return
 		}
+
+		d.UserLogin.Log.Error().
+			Bytes(zerolog.ErrorStackFieldName, debug.Stack()).
+			Any(zerolog.ErrorFieldName, err).
+			Msg("Panic in Discord event handler")
+
+		props := d.baseAnalyticsProps(d.UserLogin.Bridge.BackgroundCtx)
+		props["eventType"] = fmt.Sprintf("%T", rawEvt)
+		props["error"] = fmt.Sprint(err)
+
+		d.UserLogin.TrackAnalytics("Discord event handler panic", props)
 	}()
 
 	log := d.UserLogin.Log.With().Str("action", "handle discord event").
