@@ -157,8 +157,12 @@ func (d *DiscordClient) getChannelNameParams(ch *discordgo.Channel) *ChannelName
 func (d *DiscordClient) getChannelName(ch *discordgo.Channel) *string {
 	if ch.Type == discordgo.ChannelTypeDM {
 		// Respect friend nicknames.
-		if rel := d.relationshipWithUserID(ch.RecipientIDs[0]); rel != nil && rel.Nickname != "" {
-			return &rel.Nickname
+		if len(ch.Recipients) > 0 {
+			if rel := d.relationshipWithUserID(ch.Recipients[0].ID); rel != nil && rel.Nickname != "" {
+				return &rel.Nickname
+			}
+		} else {
+			// Impossible?
 		}
 
 		return nil

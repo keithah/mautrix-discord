@@ -906,12 +906,11 @@ func dmChannelRecipientID(ch *discordgo.Channel) *string {
 	if ch.Type != discordgo.ChannelTypeDM {
 		return nil
 	}
-	if len(ch.RecipientIDs) != 1 {
-		// shouldn't happen?
+	if len(ch.Recipients) != 1 {
 		return nil
 	}
 
-	return &ch.RecipientIDs[0]
+	return &ch.Recipients[0].ID
 }
 
 func (d *DiscordClient) baseAnalyticsProps(ctx context.Context) map[string]any {
@@ -1016,7 +1015,7 @@ func (d *DiscordClient) dmChannelForUserID(userID string) *discordgo.Channel {
 	defer d.Session.State.RUnlock()
 
 	for _, ch := range d.Session.State.PrivateChannels {
-		if len(ch.RecipientIDs) == 1 && ch.RecipientIDs[0] == userID {
+		if len(ch.Recipients) == 1 && ch.Recipients[0].ID == userID {
 			return ch
 		}
 	}
