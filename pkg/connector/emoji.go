@@ -28,8 +28,10 @@ import (
 )
 
 func (d *DiscordConnector) getCustomEmojiDownloadURL(emojiID string, animated bool) (string, string) {
+	// TODO probably best to leverage http.DetectContentType instead of
+	// assuming the media type
 	if animated {
-		return discordgo.EndpointEmojiAnimated(emojiID), "image/gif"
+		return discordgo.EndpointEmojiAnimated(emojiID), "image/webp"
 	}
 	// TODO think about using webp for size savings
 	return discordgo.EndpointEmoji(emojiID), "image/png"
