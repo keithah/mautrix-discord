@@ -138,9 +138,16 @@ func (mc *MessageConverter) ToMatrix(
 	// }
 
 	sender := discordid.MakeUserID(msg.Author.ID)
-	pmp, err := portal.PerMessageProfileForSender(ctx, sender)
+	var pmp event.BeeperPerMessageProfile
+	ghost, err := portal.Bridge.GetGhostByID(ctx, sender)
 	if err != nil {
-		log.Err(err).Msg("Failed to make per-message profile")
+		log.Err(err).Msg("Failed to get ghost for per-message profile")
+	} else {
+		pmp.ID = string(ghost.Intent.GetMXID())
+		pmp.Displayname = ghost.Name
+		if ghost.AvatarMXC != "" {
+			pmp.AvatarURL = &ghost.AvatarMXC
+		}
 	}
 
 	// Assign incrementing part IDs.
