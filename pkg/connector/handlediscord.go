@@ -592,7 +592,17 @@ func messageCtx(ctx context.Context, msg *discordgo.Message) (context.Context, *
 }
 
 func (d *DiscordClient) handleDiscordStateEvent(rawEvt any) {
+	ctx := d.UserLogin.Bridge.BackgroundCtx
+	log := zerolog.Ctx(ctx)
+
 	switch evt := rawEvt.(type) {
+	case *discordgo.ReadySupplemental:
+		nLazyPrivCh := len(evt.LazyPrivateChannels)
+		if nLazyPrivCh > 0 {
+			log.Info().
+				Int("n_lazy_private_channels", nLazyPrivCh).
+				Msg("Detected nonzero amount of lazy private channels")
+		}
 	case *discordgo.Ready:
 		d.rebuildRelationships()
 	case *discordgo.RelationshipAdd:
