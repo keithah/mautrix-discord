@@ -2,7 +2,7 @@ module go.mau.fi/mautrix-discord
 
 go 1.25.0
 
-toolchain go1.25.4
+toolchain go1.26.2
 
 require (
 	github.com/bwmarrin/discordgo v0.27.0
@@ -10,10 +10,10 @@ require (
 	github.com/gorilla/websocket v1.5.0
 	github.com/rs/zerolog v1.35.1
 	github.com/yuin/goldmark v1.8.2
-	go.mau.fi/util v0.9.8
+	go.mau.fi/util v0.9.9-0.20260424160448-fd0d9737ad38
 	golang.org/x/term v0.42.0
 	gopkg.in/yaml.v3 v3.0.1
-	maunium.net/go/mautrix v0.27.0
+	maunium.net/go/mautrix v0.27.1-0.20260429093209-dc0622c62f39
 )
 
 require (
