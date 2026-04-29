@@ -430,6 +430,11 @@ func (d *DiscordClient) syncPrivateChannels(ctx context.Context) {
 		log.Debug().Str("channel_id", dm.ID).Msg("Syncing private channel with recent activity")
 		d.queueChannelResync(ctx, dm)
 	}
+
+	log.Info().
+		Int("dms_synced", maxDms).
+		Int("dms_total", len(dms)).
+		Msg("Synced private channels")
 }
 
 func (d *DiscordClient) canSeeGuildChannel(ctx context.Context, ch *discordgo.Channel) bool {
