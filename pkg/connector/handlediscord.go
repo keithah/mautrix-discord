@@ -597,12 +597,9 @@ func (d *DiscordClient) handleDiscordStateEvent(rawEvt any) {
 
 	switch evt := rawEvt.(type) {
 	case *discordgo.ReadySupplemental:
-		nLazyPrivCh := len(evt.LazyPrivateChannels)
-		if nLazyPrivCh > 0 {
-			log.Info().
-				Int("n_lazy_private_channels", nLazyPrivCh).
-				Msg("Detected nonzero amount of lazy private channels")
-		}
+		log.Info().
+			Int("n_lazy_private_channels", len(evt.LazyPrivateChannels)).
+			Msg("Received supplemental READY")
 	case *discordgo.Ready:
 		d.rebuildRelationships()
 	case *discordgo.RelationshipAdd:
