@@ -42,6 +42,8 @@ type Config struct {
 	CustomEmojiReactions *bool  `yaml:"custom_emoji_reactions"`
 	GuildAvatarsInRooms  *bool  `yaml:"guild_avatars_in_rooms"`
 
+	LogWhenDroppingMessages bool `yaml:"log_when_dropping_messages"`
+
 	channelNameTemplate *template.Template `yaml:"-"`
 }
 
@@ -104,6 +106,7 @@ func upgradeConfig(helper up.Helper) {
 	helper.Copy(up.Bool, "guilds", "guild_avatars_in_rooms")
 	helper.Copy(up.Str, "channel_name_template")
 	helper.Copy(up.Bool, "custom_emoji_reactions")
+	helper.Copy(up.Bool, "log_when_dropping_messages")
 }
 
 func (d *DiscordConnector) GetConfig() (example string, data any, upgrader up.Upgrader) {

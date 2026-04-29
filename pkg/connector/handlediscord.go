@@ -818,6 +818,15 @@ func (d *DiscordClient) handleDiscordEvent(rawEvt any) {
 		inBridgedChannel, route := d.channelIsBridged(ctx, evt.ChannelID)
 		isDM := route != nil && route.FromChannel != nil && channelIsPrivate(route.FromChannel)
 		if !inBridgedChannel && !isDM {
+			if d.connector.Config.LogWhenDroppingMessages {
+				log.Debug().
+					Str("channel_id", evt.ChannelID).
+					Str("message_id", evt.ID).
+					Bool("route_uncertain", route != nil && route.Uncertain).
+					Bool("from_channel_known", route != nil && route.FromChannel != nil).
+					Bool("from_thread_known", route != nil && route.FromThread != nil).
+					Msg("Dropping message for non-bridged channel")
+			}
 			return
 		}
 
