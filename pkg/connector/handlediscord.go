@@ -691,7 +691,14 @@ func (d *DiscordClient) handleDiscordEvent(rawEvt any) {
 
 	switch evt := rawEvt.(type) {
 	case *discordgo.Ready:
-		log.Info().Msg("Received READY dispatch from discordgo")
+		log.Info().
+			Int("n_dms", len(evt.PrivateChannels)).
+			Int("n_guilds", len(evt.Guilds)).
+			Int("n_merged_members", len(evt.MergedMembers)).
+			Int("n_relationships", len(evt.Relationships)).
+			Int("n_users", len(evt.Users)).
+			Msg("Received READY dispatch from discordgo")
+
 		d.userCache.UpdateWithReady(evt)
 		d.syncRemoteProfile(ctx)
 		d.UserLogin.BridgeState.Send(status.BridgeState{
