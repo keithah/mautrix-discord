@@ -10,10 +10,10 @@ require (
 	github.com/gorilla/websocket v1.5.0
 	github.com/rs/zerolog v1.35.1
 	github.com/yuin/goldmark v1.8.2
-	go.mau.fi/util v0.9.9-0.20260424160448-fd0d9737ad38
+	go.mau.fi/util v0.9.9-0.20260505143909-8e67f0d355e0
 	golang.org/x/term v0.42.0
 	gopkg.in/yaml.v3 v3.0.1
-	maunium.net/go/mautrix v0.27.1-0.20260429093209-dc0622c62f39
+	maunium.net/go/mautrix v0.27.1-0.20260507135742-7ec18e08eac3
 )
 
 require (
@@ -23,7 +23,7 @@ require (
 	github.com/lib/pq v1.12.3 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.21 // indirect
-	github.com/mattn/go-sqlite3 v1.14.42 // indirect
+	github.com/mattn/go-sqlite3 v1.14.44 // indirect
 	github.com/petermattis/goid v0.0.0-20260330135022-df67b199bc81 // indirect
 	github.com/rs/xid v1.6.0 // indirect
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e // indirect
