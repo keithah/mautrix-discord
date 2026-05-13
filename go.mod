@@ -10,10 +10,10 @@ require (
 	github.com/gorilla/websocket v1.5.0
 	github.com/rs/zerolog v1.35.1
 	github.com/yuin/goldmark v1.8.2
-	go.mau.fi/util v0.9.9-0.20260505143909-8e67f0d355e0
+	go.mau.fi/util v0.9.9-0.20260511124621-9241e81bdf25
 	golang.org/x/term v0.42.0
 	gopkg.in/yaml.v3 v3.0.1
-	maunium.net/go/mautrix v0.27.1-0.20260507135742-7ec18e08eac3
+	maunium.net/go/mautrix v0.27.1-0.20260513120123-5fba7e3afae4
 )
 
 require (
