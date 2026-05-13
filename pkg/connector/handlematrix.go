@@ -112,12 +112,13 @@ func (d *DiscordClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.M
 	ch := d.channelWithID(ctx, channelID)
 	ctx = context.WithValue(ctx, contextKeyChannel, ch)
 
-	// (This fires a goroutine internally so it won't block.)
 	if ch != nil {
 		if channelIsPrivate(ch) {
 			// NOTE: These analytics are so that we can get some data on what's
 			// causing Discord to disable/restrict/ban accounts. For message
 			// attempts, we only send these for DMs at the moment.
+			//
+			// (This fires a goroutine internally so it won't block.)
 			d.sendOutgoingMessageAttemptAnalytics(ctx, map[string]any{
 				"messageFlags":   sendReq.Flags,
 				"messageType":    sendReq.Type,
