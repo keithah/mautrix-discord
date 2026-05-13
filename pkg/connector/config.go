@@ -42,6 +42,8 @@ type Config struct {
 	CustomEmojiReactions *bool  `yaml:"custom_emoji_reactions"`
 	GuildAvatarsInRooms  *bool  `yaml:"guild_avatars_in_rooms"`
 
+	ForbidDMingStrangers *bool `yaml:"forbid_dming_strangers"`
+
 	LogWhenDroppingMessages bool `yaml:"log_when_dropping_messages"`
 
 	channelNameTemplate *template.Template `yaml:"-"`
@@ -93,6 +95,10 @@ func (c *Config) FormatChannelName(params *ChannelNameParams) string {
 	return buffer.String()
 }
 
+func (c Config) ForbidDMingStrangersEnabled() bool {
+	return c.ForbidDMingStrangers == nil || *c.ForbidDMingStrangers
+}
+
 func (c Config) CustomEmojiReactionsEnabled() bool {
 	return c.CustomEmojiReactions == nil || *c.CustomEmojiReactions
 }
@@ -104,6 +110,7 @@ func (c Config) GuildAvatarsInRoomsEnabled() bool {
 func upgradeConfig(helper up.Helper) {
 	helper.Copy(up.List, "guilds", "bridging_guild_ids")
 	helper.Copy(up.Bool, "guilds", "guild_avatars_in_rooms")
+	helper.Copy(up.Bool, "forbid_dming_strangers")
 	helper.Copy(up.Str, "channel_name_template")
 	helper.Copy(up.Bool, "custom_emoji_reactions")
 	helper.Copy(up.Bool, "log_when_dropping_messages")

@@ -18,6 +18,7 @@ package connector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"math"
@@ -100,6 +101,15 @@ func (d *DiscordClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.M
 	}
 	refererOpt := makeDiscordReferer(guildID, parentChannelID, threadChannelID)
 
+	ch := d.channelWithID(ctx, channelID)
+	ctx = context.WithValue(ctx, contextKeyChannel, ch)
+
+	// Perform any required screening before making any requests to Discord at
+	// all (message conversion does).
+	if err := d.screenOutgoingMessage(ctx, ch); err != nil {
+		return nil, err
+	}
+
 	sendReq, err := d.connector.MsgConv.ToDiscord(ctx, d.Session, msg, channelID, refererOpt)
 	if err != nil {
 		return nil, err
@@ -109,10 +119,12 @@ func (d *DiscordClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.M
 		sendReq.Reference.ChannelID = threadChannelID
 	}
 
-	ch := d.channelWithID(ctx, channelID)
-	ctx = context.WithValue(ctx, contextKeyChannel, ch)
-
 	if ch != nil {
+		var relType *discordgo.RelationshipType
+		if rel := d.relationshipWithDMRecipient(ch); rel != nil {
+			relType = &rel.Type
+		}
+
 		if channelIsPrivate(ch) {
 			// NOTE: These analytics are so that we can get some data on what's
 			// causing Discord to disable/restrict/ban accounts. For message
@@ -126,11 +138,6 @@ func (d *DiscordClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.M
 				"hasEmbeds":      len(sendReq.Embeds) > 0,
 				"isReplying":     sendReq.Reference != nil && sendReq.Reference.Type == discordgo.MessageReferenceTypeDefault,
 			})
-		}
-
-		var relType *discordgo.RelationshipType
-		if rel := d.relationshipWithDMRecipient(ch); rel != nil {
-			relType = &rel.Type
 		}
 
 		d.lastSendAttemptMutex.Lock()
@@ -159,6 +166,40 @@ func (d *DiscordClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.M
 	return &bridgev2.MatrixMessageResponse{
 		DB: dbMessage,
 	}, nil
+}
+
+var errCannotDMStranger = errors.New("can't direct message a stranger")
+
+func (d *DiscordClient) screenOutgoingMessage(ctx context.Context, destCh *discordgo.Channel) error {
+	log := zerolog.Ctx(ctx)
+
+	if d.connector.Config.ForbidDMingStrangersEnabled() {
+		dmRecipID := dmChannelRecipientID(destCh)
+		if dmRecipID != nil {
+			rel := d.relationshipWithUserID(*dmRecipID)
+			friendsWithDMRecip := rel != nil && rel.Type == discordgo.RelationshipFriend
+
+			dmRecip := d.userCache.Resolve(ctx, *dmRecipID)
+
+			if dmRecip != nil && !dmRecip.Bot && !friendsWithDMRecip {
+				loggedRelType := "none"
+				if rel != nil {
+					loggedRelType = readableRelationshipType(rel.Type)
+				}
+				log.Info().
+					Str("relationship_type", loggedRelType).
+					Msg("Preventing direct message send to a stranger")
+
+				return bridgev2.WrapErrorInStatus(errCannotDMStranger).
+					WithStatus(event.MessageStatusFail).
+					WithIsCertain(true).
+					WithMessage("You can't message users who aren't on your friends list. To continue, use the Discord app to chat or add them as a friend.").
+					WithSendNotice(true)
+			}
+		}
+	}
+
+	return nil
 }
 
 func (d *DiscordClient) sendOutgoingMessageAttemptAnalytics(ctx context.Context, extra map[string]any) {

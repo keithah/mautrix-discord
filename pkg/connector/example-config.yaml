@@ -8,6 +8,11 @@ guilds:
     # Should guild channel portals take on the guild icon as their avatars?
     guild_avatars_in_rooms: false
 
+# Should the bridge refuse to send direct messages to recipients the user isn't
+# friends with on Discord? Discord generally considers this to be a "risky"
+# action.
+forbid_dming_strangers: true
+
 # Template for Matrix room names created for Discord channels, except for 1:1
 # DMs. 1:1 DMs intentionally do not use this template as their room metadata is
 # derived from the other user's ghost (when private_chat_portal_meta is enabled).
