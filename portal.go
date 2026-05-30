@@ -2192,16 +2192,22 @@ func (portal *Portal) handleMatrixRedaction(sender *User, evt *event.Event) {
 		return
 	}
 
-	if sess != nil {
-		reaction := portal.bridge.DB.Reaction.GetByMXID(evt.Redacts)
-		if reaction != nil && reaction.Channel == portal.Key {
-			err := sess.MessageReactionRemoveUser(portal.GuildID, reaction.DiscordProtoChannelID(), reaction.MessageID, reaction.EmojiName, reaction.Sender)
-			go portal.sendMessageMetrics(evt, err, "Error sending")
-			if err == nil {
-				reaction.Delete()
+	reaction := portal.bridge.DB.Reaction.GetByMXID(evt.Redacts)
+	if reaction != nil && reaction.Channel == portal.Key {
+		reactionUser := sender
+		if reactionUser.Session == nil {
+			reactionUser = portal.getRelayReactionUser()
+			if reactionUser == nil || reactionUser.DiscordID != reaction.Sender {
+				go portal.sendMessageMetrics(evt, errNoRelayReactionUser, "Ignoring")
+				return
 			}
-			return
 		}
+		err := reactionUser.Session.MessageReactionRemoveUser(portal.GuildID, reaction.DiscordProtoChannelID(), reaction.MessageID, reaction.EmojiName, reaction.Sender)
+		go portal.sendMessageMetrics(evt, err, "Error sending")
+		if err == nil {
+			reaction.Delete()
+		}
+		return
 	}
 
 	go portal.sendMessageMetrics(evt, errTargetNotFound, "Ignoring")
