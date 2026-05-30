@@ -1959,7 +1959,7 @@ func (portal *Portal) getRelayReactionUser() *User {
 	}
 
 	relayUser := portal.bridge.GetUserByMXID(id.UserID(relayUserID))
-	if relayUser == nil || !relayUser.IsLoggedIn() || relayUser.Session == nil {
+	if relayUser == nil || !relayUser.IsLoggedIn() {
 		return nil
 	}
 	return relayUser
