@@ -25,6 +25,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"maunium.net/go/mautrix/bridge/bridgeconfig"
+	"maunium.net/go/mautrix/id"
 )
 
 type BridgeConfig struct {
@@ -128,6 +129,10 @@ func (bc *BridgeConfig) EnableMessageErrorNotices() bool {
 	return bc.MessageErrorNotices
 }
 
+func (bc *BridgeConfig) EnableRelayReactions() bool {
+	return strings.TrimSpace(bc.RelayReactionsFrom) != ""
+}
+
 func boolToInt(val bool) int {
 	if val {
 		return 1
@@ -142,6 +147,11 @@ func (bc *BridgeConfig) Validate() error {
 	exampleLen := boolToInt(hasWildcard) + boolToInt(hasExampleUser) + boolToInt(hasExampleDomain)
 	if len(bc.Permissions) <= exampleLen {
 		return errors.New("bridge.permissions not configured")
+	}
+	if relayReactionsFrom := strings.TrimSpace(bc.RelayReactionsFrom); relayReactionsFrom != "" {
+		if _, _, err := id.UserID(relayReactionsFrom).Parse(); err != nil {
+			return fmt.Errorf("bridge.relay_reactions_from must be a full Matrix user ID: %w", err)
+		}
 	}
 	return nil
 }
