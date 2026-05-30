@@ -150,9 +150,10 @@ bridge:
     # Should incoming custom emoji reactions be bridged as mxc:// URIs?
     # If set to false, custom emoji reactions will be bridged as the shortcode instead, and the image won't be available.
     custom_emoji_reactions: true
-    # Matrix user ID whose logged-in Discord session should be used to relay reactions from Matrix users who aren't
-    # logged into Discord. This is disabled when empty. Discord will show relayed reactions as coming from this account,
-    # not from the Matrix user who reacted.
+    # Full Matrix user ID whose logged-in Discord session should be used to relay reactions from Matrix users who aren't
+    # logged into Discord, for example `@user:example.com`. This user must already be logged into Discord through the
+    # bridge. This is disabled when empty. Discord will show relayed reactions as coming from this account, not from the
+    # Matrix user who reacted.
     relay_reactions_from:
     # Should the bridge attempt to completely delete portal rooms when a channel is deleted on Discord?
     # If true, the bridge will try to kick Matrix users from the room. Otherwise, the bridge only makes ghosts leave.

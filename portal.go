@@ -1223,6 +1223,7 @@ var (
 	errUserNotReceiver             = errors.New("user is not portal receiver")
 	errUserNotLoggedIn             = errors.New("user is not logged in and portal doesn't have webhook")
 	errNoRelayReactionUser         = errors.New("no logged-in Discord session available to relay reaction")
+	errRelayReactionSenderMismatch = errors.New("relay reaction sender doesn't match configured relay user")
 	errUnknownEditTarget           = errors.New("unknown edit target")
 	errUnknownRelationType         = errors.New("unknown relation type")
 	errTargetNotFound              = errors.New("target event not found")
@@ -1252,7 +1253,7 @@ func errorToStatusReason(err error) (reason event.MessageStatusReason, status ev
 		errors.Is(err, attachment.InvalidKey),
 		errors.Is(err, attachment.InvalidInitVector):
 		return event.MessageStatusUndecryptable, event.MessageStatusFail, true, true, "", nil
-	case errors.Is(err, errUserNotReceiver), errors.Is(err, errUserNotLoggedIn), errors.Is(err, errNoRelayReactionUser):
+	case errors.Is(err, errUserNotReceiver), errors.Is(err, errUserNotLoggedIn), errors.Is(err, errNoRelayReactionUser), errors.Is(err, errRelayReactionSenderMismatch):
 		return event.MessageStatusNoPermission, event.MessageStatusFail, true, false, "", nil
 	case errors.Is(err, errUnknownEditTarget):
 		return event.MessageStatusGenericError, event.MessageStatusFail, true, false, "", nil
@@ -1952,7 +1953,7 @@ func (portal *Portal) getMatrixUsers() ([]id.UserID, error) {
 }
 
 func (portal *Portal) getRelayReactionUser() *User {
-	relayUserID := portal.bridge.Config.Bridge.RelayReactionsFrom
+	relayUserID := strings.TrimSpace(portal.bridge.Config.Bridge.RelayReactionsFrom)
 	if relayUserID == "" {
 		return nil
 	}
@@ -2195,12 +2196,16 @@ func (portal *Portal) handleMatrixRedaction(sender *User, evt *event.Event) {
 	reaction := portal.bridge.DB.Reaction.GetByMXID(evt.Redacts)
 	if reaction != nil && reaction.Channel == portal.Key {
 		reactionUser := sender
-		if reactionUser.Session == nil {
+		if !reactionUser.IsLoggedIn() {
 			reactionUser = portal.getRelayReactionUser()
-			if reactionUser == nil || reactionUser.DiscordID != reaction.Sender {
+			if reactionUser == nil {
 				go portal.sendMessageMetrics(evt, errNoRelayReactionUser, "Ignoring")
 				return
 			}
+		}
+		if reactionUser.DiscordID != reaction.Sender {
+			go portal.sendMessageMetrics(evt, errRelayReactionSenderMismatch, "Ignoring")
+			return
 		}
 		err := reactionUser.Session.MessageReactionRemoveUser(portal.GuildID, reaction.DiscordProtoChannelID(), reaction.MessageID, reaction.EmojiName, reaction.Sender)
 		go portal.sendMessageMetrics(evt, err, "Error sending")
