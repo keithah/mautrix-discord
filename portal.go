@@ -2171,13 +2171,12 @@ func (portal *Portal) handleMatrixRedaction(sender *User, evt *event.Event) {
 	}
 
 	sess := sender.Session
-	if sess == nil && portal.RelayWebhookID == "" {
-		go portal.sendMessageMetrics(evt, errUserNotLoggedIn, "Ignoring")
-		return
-	}
-
 	message := portal.bridge.DB.Message.GetByMXID(portal.Key, evt.Redacts)
 	if message != nil {
+		if sess == nil && portal.RelayWebhookID == "" {
+			go portal.sendMessageMetrics(evt, errUserNotLoggedIn, "Ignoring")
+			return
+		}
 		var err error
 		// TODO add support for deleting individual attachments from messages
 		if sess != nil {
