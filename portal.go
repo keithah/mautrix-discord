@@ -1222,6 +1222,7 @@ var (
 	errUnexpectedParsedContentType = errors.New("unexpected parsed content type")
 	errUserNotReceiver             = errors.New("user is not portal receiver")
 	errUserNotLoggedIn             = errors.New("user is not logged in and portal doesn't have webhook")
+	errNoRelayReactionUser         = errors.New("no logged-in Discord session available to relay reaction")
 	errUnknownEditTarget           = errors.New("unknown edit target")
 	errUnknownRelationType         = errors.New("unknown relation type")
 	errTargetNotFound              = errors.New("target event not found")
@@ -1251,7 +1252,7 @@ func errorToStatusReason(err error) (reason event.MessageStatusReason, status ev
 		errors.Is(err, attachment.InvalidKey),
 		errors.Is(err, attachment.InvalidInitVector):
 		return event.MessageStatusUndecryptable, event.MessageStatusFail, true, true, "", nil
-	case errors.Is(err, errUserNotReceiver), errors.Is(err, errUserNotLoggedIn):
+	case errors.Is(err, errUserNotReceiver), errors.Is(err, errUserNotLoggedIn), errors.Is(err, errNoRelayReactionUser):
 		return event.MessageStatusNoPermission, event.MessageStatusFail, true, false, "", nil
 	case errors.Is(err, errUnknownEditTarget):
 		return event.MessageStatusGenericError, event.MessageStatusFail, true, false, "", nil
@@ -1950,10 +1951,32 @@ func (portal *Portal) getMatrixUsers() ([]id.UserID, error) {
 	return users, nil
 }
 
+func (portal *Portal) getRelayReactionUser() *User {
+	relayUserID := portal.bridge.Config.Bridge.RelayReactionsFrom
+	if relayUserID == "" {
+		return nil
+	}
+
+	relayUser := portal.bridge.GetUserByMXID(id.UserID(relayUserID))
+	if relayUser == nil || !relayUser.IsLoggedIn() {
+		return nil
+	}
+	return relayUser
+}
+
 func (portal *Portal) handleMatrixReaction(sender *User, evt *event.Event) {
 	if !sender.IsLoggedIn() {
-		go portal.sendMessageMetrics(evt, errUserNotLoggedIn, "Ignoring")
-		return
+		if portal.RelayWebhookID == "" {
+			go portal.sendMessageMetrics(evt, errUserNotLoggedIn, "Ignoring")
+			return
+		}
+
+		relayUser := portal.getRelayReactionUser()
+		if relayUser == nil {
+			go portal.sendMessageMetrics(evt, errNoRelayReactionUser, "Ignoring")
+			return
+		}
+		sender = relayUser
 	}
 	if portal.IsPrivateChat() && sender.DiscordID != portal.Key.Receiver {
 		go portal.sendMessageMetrics(evt, errUserNotReceiver, "Ignoring")
