@@ -1959,7 +1959,7 @@ func (portal *Portal) getRelayReactionUser() *User {
 	}
 
 	relayUser := portal.bridge.GetUserByMXID(id.UserID(relayUserID))
-	if relayUser == nil || !relayUser.IsLoggedIn() {
+	if relayUser == nil || !relayUser.IsLoggedIn() || relayUser.Session == nil {
 		return nil
 	}
 	return relayUser
@@ -1978,6 +1978,9 @@ func (portal *Portal) handleMatrixReaction(sender *User, evt *event.Event) {
 			return
 		}
 		sender = relayUser
+	} else if sender.Session == nil {
+		go portal.sendMessageMetrics(evt, ErrNotConnected, "Ignoring")
+		return
 	}
 	if portal.IsPrivateChat() && sender.DiscordID != portal.Key.Receiver {
 		go portal.sendMessageMetrics(evt, errUserNotReceiver, "Ignoring")
@@ -2210,6 +2213,10 @@ func (portal *Portal) handleMatrixRedaction(sender *User, evt *event.Event) {
 			if relayUser != nil && relayUser.DiscordID == reaction.Sender {
 				reactionUser = relayUser
 			}
+		}
+		if reactionUser.Session == nil {
+			go portal.sendMessageMetrics(evt, ErrNotConnected, "Ignoring")
+			return
 		}
 		err := reactionUser.Session.MessageReactionRemoveUser(portal.GuildID, reaction.DiscordProtoChannelID(), reaction.MessageID, reaction.EmojiName, reaction.Sender)
 		go portal.sendMessageMetrics(evt, err, "Error sending")
