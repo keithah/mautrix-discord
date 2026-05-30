@@ -2206,6 +2206,11 @@ func (portal *Portal) handleMatrixRedaction(sender *User, evt *event.Event) {
 				go portal.sendMessageMetrics(evt, errRelayReactionSenderMismatch, "Ignoring")
 				return
 			}
+		} else if reactionUser.DiscordID != reaction.Sender {
+			relayUser := portal.getRelayReactionUser()
+			if relayUser != nil && relayUser.DiscordID == reaction.Sender {
+				reactionUser = relayUser
+			}
 		}
 		err := reactionUser.Session.MessageReactionRemoveUser(portal.GuildID, reaction.DiscordProtoChannelID(), reaction.MessageID, reaction.EmojiName, reaction.Sender)
 		go portal.sendMessageMetrics(evt, err, "Error sending")
