@@ -1,0 +1,121 @@
+name: Forward-port upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 10 * * *"
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  forward-port:
+    name: Forward-port fork patches
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out fork
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Forward-port onto upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_REPO: mautrix/discord
+          TARGET_BRANCH: main
+          SYNC_BRANCH: sync/upstream-main
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch origin "${TARGET_BRANCH}"
+          git fetch upstream --tags --prune
+
+          upstream_default="$(gh repo view "${UPSTREAM_REPO}" --json defaultBranchRef --jq '.defaultBranchRef.name')"
+          upstream_ref="upstream/${upstream_default}"
+          latest_release="$(gh release view --repo "${UPSTREAM_REPO}" --json tagName --jq '.tagName' 2>/dev/null || true)"
+          upstream_sha="$(git rev-parse --short "${upstream_ref}")"
+          base="$(git merge-base "origin/${TARGET_BRANCH}" "${upstream_ref}")"
+
+          mapfile -t patches < <(git rev-list --reverse "${base}..origin/${TARGET_BRANCH}")
+          if [[ "${#patches[@]}" -eq 0 ]]; then
+            echo "No fork-only commits found on origin/${TARGET_BRANCH}; nothing to forward-port."
+            exit 0
+          fi
+
+          git checkout -B "${SYNC_BRANCH}" "${upstream_ref}"
+
+          for commit in "${patches[@]}"; do
+            if git cherry-pick -x "${commit}"; then
+              continue
+            fi
+
+            if git diff --quiet && git diff --cached --quiet; then
+              git cherry-pick --skip
+              continue
+            fi
+
+            short_commit="$(git rev-parse --short "${commit}")"
+            title="Forward-port conflict with ${UPSTREAM_REPO}@${upstream_sha}"
+            body="$(cat <<EOF
+          Forward-porting fork patches from \`${TARGET_BRANCH}\` onto \`${UPSTREAM_REPO}:${upstream_default}\` failed.
+
+          - Upstream branch: \`${upstream_default}\`
+          - Upstream commit: \`${upstream_sha}\`
+          - Latest upstream release: \`${latest_release:-unknown}\`
+          - Conflicting patch commit: \`${short_commit}\`
+          - Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          Resolve the conflict locally, update \`${TARGET_BRANCH}\`, and rerun this workflow.
+          EOF
+          )"
+            existing_issue="$(gh issue list --state open --search "${title} in:title" --json number --jq '.[0].number // empty')"
+            if [[ -n "${existing_issue}" ]]; then
+              gh issue comment "${existing_issue}" --body "${body}"
+            else
+              gh issue create --title "${title}" --body "${body}"
+            fi
+            exit 1
+          done
+
+          if git diff --quiet "origin/${TARGET_BRANCH}" HEAD; then
+            echo "Forward-ported tree matches ${TARGET_BRANCH}; no PR needed."
+            exit 0
+          fi
+
+          go test ./...
+
+          git push --force-with-lease origin "${SYNC_BRANCH}"
+
+          pr_title="Forward-port fork patches onto ${UPSTREAM_REPO}@${upstream_sha}"
+          pr_body="$(cat <<EOF
+          Automated forward-port of this fork's patches onto \`${UPSTREAM_REPO}:${upstream_default}\`.
+
+          - Upstream branch: \`${upstream_default}\`
+          - Upstream commit: \`${upstream_sha}\`
+          - Latest upstream release: \`${latest_release:-unknown}\`
+          - Patch commits replayed: ${#patches[@]}
+
+          Verification:
+          - \`go test ./...\`
+          EOF
+          )"
+
+          existing_pr="$(gh pr list --state open --head "${SYNC_BRANCH}" --base "${TARGET_BRANCH}" --json number --jq '.[0].number // empty')"
+          if [[ -n "${existing_pr}" ]]; then
+            gh pr edit "${existing_pr}" --title "${pr_title}" --body "${pr_body}"
+          else
+            gh pr create --base "${TARGET_BRANCH}" --head "${SYNC_BRANCH}" --title "${pr_title}" --body "${pr_body}"
+          fi
