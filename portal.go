@@ -19,6 +19,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/gabriel-vasile/mimetype"
@@ -1965,6 +1966,27 @@ func (portal *Portal) getRelayReactionUser() *User {
 	return relayUser
 }
 
+func isValidDiscordUnicodeReactionKey(key string) bool {
+	if key == "" || strings.TrimSpace(key) != key || strings.ContainsFunc(key, unicode.IsSpace) {
+		return false
+	}
+
+	runes := []rune(key)
+	if len(runes) == 3 && runes[1] == '\ufe0f' && runes[2] == '\u20e3' {
+		return (runes[0] >= '0' && runes[0] <= '9') || runes[0] == '#' || runes[0] == '*'
+	}
+	if len(runes) == 2 && runes[1] == '\u20e3' {
+		return (runes[0] >= '0' && runes[0] <= '9') || runes[0] == '#' || runes[0] == '*'
+	}
+
+	for _, char := range key {
+		if unicode.IsLetter(char) || unicode.IsNumber(char) {
+			return false
+		}
+	}
+	return true
+}
+
 func (portal *Portal) handleMatrixReaction(sender *User, evt *event.Event) {
 	if !sender.IsLoggedIn() {
 		if portal.RelayWebhookID == "" {
@@ -2030,6 +2052,14 @@ func (portal *Portal) handleMatrixReaction(sender *User, evt *event.Event) {
 		}
 	} else {
 		emojiID = variationselector.FullyQualify(emojiID)
+		if !isValidDiscordUnicodeReactionKey(emojiID) {
+			portal.log.Debug().
+				Str("event_id", evt.ID.String()).
+				Str("reaction_key", reaction.RelatesTo.Key).
+				Msg("Ignoring Matrix reaction with invalid Discord emoji key")
+			go portal.sendMessageMetrics(evt, nil, "")
+			return
+		}
 	}
 
 	existing := portal.bridge.DB.Reaction.GetByDiscordID(portal.Key, msg.DiscordID, sender.DiscordID, emojiID)
