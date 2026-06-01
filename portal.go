@@ -717,6 +717,24 @@ func isReplyEmbed(embed *discordgo.MessageEmbed) bool {
 	return hackyReplyPattern.MatchString(embed.Description)
 }
 
+func isLinkPreviewOnlyDiscordUpdate(msg *discordgo.Message) bool {
+	if msg.EditedTimestamp != nil || isPlainGifMessage(msg) || len(msg.Embeds) == 0 {
+		return false
+	}
+	if len(msg.Attachments) > 0 || len(msg.StickerItems) > 0 || len(msg.Components) > 0 {
+		return false
+	}
+	for i, embed := range msg.Embeds {
+		if i == 0 && msg.MessageReference == nil && isReplyEmbed(embed) {
+			continue
+		}
+		if getEmbedType(msg, embed) != EmbedLinkPreview {
+			return false
+		}
+	}
+	return true
+}
+
 func (portal *Portal) getReplyTarget(source *User, threadID string, ref *discordgo.MessageReference, embeds []*discordgo.MessageEmbed, allowNonExistent bool) *event.InReplyTo {
 	if ref == nil && len(embeds) > 0 {
 		match := hackyReplyPattern.FindStringSubmatch(embeds[0].Description)
@@ -864,6 +882,10 @@ func (portal *Portal) handleDiscordMessageUpdate(user *User, msg *discordgo.Mess
 			Str("message_id", msg.ID).
 			Str("author_id", msg.Author.ID).
 			Msg("Dropping edit from relay webhook")
+		return
+	}
+	if isLinkPreviewOnlyDiscordUpdate(msg) {
+		log.Debug().Msg("Dropping link preview-only Discord update")
 		return
 	}
 
