@@ -19,6 +19,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/gabriel-vasile/mimetype"
@@ -716,6 +717,24 @@ func isReplyEmbed(embed *discordgo.MessageEmbed) bool {
 	return hackyReplyPattern.MatchString(embed.Description)
 }
 
+func isLinkPreviewOnlyDiscordUpdate(msg *discordgo.Message) bool {
+	if msg.EditedTimestamp != nil || isPlainGifMessage(msg) || len(msg.Embeds) == 0 {
+		return false
+	}
+	if len(msg.Attachments) > 0 || len(msg.StickerItems) > 0 || len(msg.Components) > 0 {
+		return false
+	}
+	for i, embed := range msg.Embeds {
+		if i == 0 && msg.MessageReference == nil && isReplyEmbed(embed) {
+			continue
+		}
+		if getEmbedType(msg, embed) != EmbedLinkPreview {
+			return false
+		}
+	}
+	return true
+}
+
 func (portal *Portal) getReplyTarget(source *User, threadID string, ref *discordgo.MessageReference, embeds []*discordgo.MessageEmbed, allowNonExistent bool) *event.InReplyTo {
 	if ref == nil && len(embeds) > 0 {
 		match := hackyReplyPattern.FindStringSubmatch(embeds[0].Description)
@@ -863,6 +882,10 @@ func (portal *Portal) handleDiscordMessageUpdate(user *User, msg *discordgo.Mess
 			Str("message_id", msg.ID).
 			Str("author_id", msg.Author.ID).
 			Msg("Dropping edit from relay webhook")
+		return
+	}
+	if isLinkPreviewOnlyDiscordUpdate(msg) {
+		log.Debug().Msg("Dropping link preview-only Discord update")
 		return
 	}
 
@@ -1222,6 +1245,8 @@ var (
 	errUnexpectedParsedContentType = errors.New("unexpected parsed content type")
 	errUserNotReceiver             = errors.New("user is not portal receiver")
 	errUserNotLoggedIn             = errors.New("user is not logged in and portal doesn't have webhook")
+	errNoRelayReactionUser         = errors.New("no logged-in Discord session available to relay reaction")
+	errRelayReactionSenderMismatch = errors.New("relay reaction sender doesn't match configured relay user")
 	errUnknownEditTarget           = errors.New("unknown edit target")
 	errUnknownRelationType         = errors.New("unknown relation type")
 	errTargetNotFound              = errors.New("target event not found")
@@ -1251,7 +1276,7 @@ func errorToStatusReason(err error) (reason event.MessageStatusReason, status ev
 		errors.Is(err, attachment.InvalidKey),
 		errors.Is(err, attachment.InvalidInitVector):
 		return event.MessageStatusUndecryptable, event.MessageStatusFail, true, true, "", nil
-	case errors.Is(err, errUserNotReceiver), errors.Is(err, errUserNotLoggedIn):
+	case errors.Is(err, errUserNotReceiver), errors.Is(err, errUserNotLoggedIn), errors.Is(err, errNoRelayReactionUser), errors.Is(err, errRelayReactionSenderMismatch):
 		return event.MessageStatusNoPermission, event.MessageStatusFail, true, false, "", nil
 	case errors.Is(err, errUnknownEditTarget):
 		return event.MessageStatusGenericError, event.MessageStatusFail, true, false, "", nil
@@ -1950,9 +1975,55 @@ func (portal *Portal) getMatrixUsers() ([]id.UserID, error) {
 	return users, nil
 }
 
+func (portal *Portal) getRelayReactionUser() *User {
+	relayUserID := strings.TrimSpace(portal.bridge.Config.Bridge.RelayReactionsFrom)
+	if relayUserID == "" {
+		return nil
+	}
+
+	relayUser := portal.bridge.GetUserByMXID(id.UserID(relayUserID))
+	if relayUser == nil || !relayUser.IsLoggedIn() {
+		return nil
+	}
+	return relayUser
+}
+
+func isValidDiscordUnicodeReactionKey(key string) bool {
+	if key == "" || strings.TrimSpace(key) != key || strings.ContainsFunc(key, unicode.IsSpace) {
+		return false
+	}
+
+	runes := []rune(key)
+	if len(runes) == 3 && runes[1] == '\ufe0f' && runes[2] == '\u20e3' {
+		return (runes[0] >= '0' && runes[0] <= '9') || runes[0] == '#' || runes[0] == '*'
+	}
+	if len(runes) == 2 && runes[1] == '\u20e3' {
+		return (runes[0] >= '0' && runes[0] <= '9') || runes[0] == '#' || runes[0] == '*'
+	}
+
+	for _, char := range key {
+		if unicode.IsLetter(char) || unicode.IsNumber(char) {
+			return false
+		}
+	}
+	return true
+}
+
 func (portal *Portal) handleMatrixReaction(sender *User, evt *event.Event) {
 	if !sender.IsLoggedIn() {
-		go portal.sendMessageMetrics(evt, errUserNotLoggedIn, "Ignoring")
+		if portal.RelayWebhookID == "" {
+			go portal.sendMessageMetrics(evt, errUserNotLoggedIn, "Ignoring")
+			return
+		}
+
+		relayUser := portal.getRelayReactionUser()
+		if relayUser == nil {
+			go portal.sendMessageMetrics(evt, errNoRelayReactionUser, "Ignoring")
+			return
+		}
+		sender = relayUser
+	} else if sender.Session == nil {
+		go portal.sendMessageMetrics(evt, ErrNotConnected, "Ignoring")
 		return
 	}
 	if portal.IsPrivateChat() && sender.DiscordID != portal.Key.Receiver {
@@ -2003,6 +2074,14 @@ func (portal *Portal) handleMatrixReaction(sender *User, evt *event.Event) {
 		}
 	} else {
 		emojiID = variationselector.FullyQualify(emojiID)
+		if !isValidDiscordUnicodeReactionKey(emojiID) {
+			portal.log.Debug().
+				Str("event_id", evt.ID.String()).
+				Str("reaction_key", reaction.RelatesTo.Key).
+				Msg("Ignoring Matrix reaction with invalid Discord emoji key")
+			go portal.sendMessageMetrics(evt, nil, "")
+			return
+		}
 	}
 
 	existing := portal.bridge.DB.Reaction.GetByDiscordID(portal.Key, msg.DiscordID, sender.DiscordID, emojiID)
@@ -2147,13 +2226,12 @@ func (portal *Portal) handleMatrixRedaction(sender *User, evt *event.Event) {
 	}
 
 	sess := sender.Session
-	if sess == nil && portal.RelayWebhookID == "" {
-		go portal.sendMessageMetrics(evt, errUserNotLoggedIn, "Ignoring")
-		return
-	}
-
 	message := portal.bridge.DB.Message.GetByMXID(portal.Key, evt.Redacts)
 	if message != nil {
+		if sess == nil && portal.RelayWebhookID == "" {
+			go portal.sendMessageMetrics(evt, errUserNotLoggedIn, "Ignoring")
+			return
+		}
 		var err error
 		// TODO add support for deleting individual attachments from messages
 		if sess != nil {
@@ -2169,16 +2247,35 @@ func (portal *Portal) handleMatrixRedaction(sender *User, evt *event.Event) {
 		return
 	}
 
-	if sess != nil {
-		reaction := portal.bridge.DB.Reaction.GetByMXID(evt.Redacts)
-		if reaction != nil && reaction.Channel == portal.Key {
-			err := sess.MessageReactionRemoveUser(portal.GuildID, reaction.DiscordProtoChannelID(), reaction.MessageID, reaction.EmojiName, reaction.Sender)
-			go portal.sendMessageMetrics(evt, err, "Error sending")
-			if err == nil {
-				reaction.Delete()
+	reaction := portal.bridge.DB.Reaction.GetByMXID(evt.Redacts)
+	if reaction != nil && reaction.Channel == portal.Key {
+		reactionUser := sender
+		if !reactionUser.IsLoggedIn() {
+			reactionUser = portal.getRelayReactionUser()
+			if reactionUser == nil {
+				go portal.sendMessageMetrics(evt, errNoRelayReactionUser, "Ignoring")
+				return
 			}
+			if reactionUser.DiscordID != reaction.Sender {
+				go portal.sendMessageMetrics(evt, errRelayReactionSenderMismatch, "Ignoring")
+				return
+			}
+		} else if reactionUser.DiscordID != reaction.Sender {
+			relayUser := portal.getRelayReactionUser()
+			if relayUser != nil && relayUser.DiscordID == reaction.Sender {
+				reactionUser = relayUser
+			}
+		}
+		if reactionUser.Session == nil {
+			go portal.sendMessageMetrics(evt, ErrNotConnected, "Ignoring")
 			return
 		}
+		err := reactionUser.Session.MessageReactionRemoveUser(portal.GuildID, reaction.DiscordProtoChannelID(), reaction.MessageID, reaction.EmojiName, reaction.Sender)
+		go portal.sendMessageMetrics(evt, err, "Error sending")
+		if err == nil {
+			reaction.Delete()
+		}
+		return
 	}
 
 	go portal.sendMessageMetrics(evt, errTargetNotFound, "Ignoring")
