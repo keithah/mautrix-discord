@@ -13,7 +13,7 @@ permissions:
 jobs:
   forward-port:
     name: Forward-port fork patches
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-2
 
     steps:
       - name: Check out fork
